@@ -3,12 +3,12 @@ use astroport::factory::{ConfigResponse, ExecuteMsg as AstroportFactoryExecuteMs
 use cosmwasm_std::{Binary, Coin, Decimal, Uint128};
 use cw20::{BalanceResponse, Cw20ExecuteMsg, Cw20QueryMsg};
 use std::collections::HashMap;
-use test_tube::{RunnerResult, SigningAccount};
+use test_tube::{Account, RunnerResult, SigningAccount};
 
 use super::utils::{parse_astroport_create_pair_events, AstroportContracts};
 use crate::robot::TestRobot;
-use crate::traits::CwItRunner;
-use crate::{ContractMap, TestRunner};
+use crate::traits::{CwItRunner, create_token_coins};
+use crate::{ContractMap, MultiTestStargateBound, TestRunner};
 
 pub trait AstroportTestRobot<'a, R>: TestRobot<'a, R>
 where
@@ -18,31 +18,17 @@ where
 
     /// Instantiates the astroport contracts, returning a struct containing the addresses and code
     /// ids of the contracts.
-    fn instantiate_astroport_contracts(
-        runner: &'a R,
-        admin: &SigningAccount,
-        code_ids: &HashMap<String, u64>,
-    ) -> AstroportContracts {
+    fn instantiate_astroport_contracts(runner: &'a R, admin: &SigningAccount, code_ids: &HashMap<String, u64>) -> AstroportContracts {
         crate::astroport::utils::instantiate_astroport(runner, admin, code_ids)
     }
 
     /// Uploads and instantiates the astroport contracts, returning a struct containing the
     /// addresses and code ids of the contracts.
-    fn upload_and_init_astroport_contracts(
-        runner: &'a R,
-        contracts: ContractMap,
-        admin: &SigningAccount,
-    ) -> AstroportContracts {
+    fn upload_and_init_astroport_contracts(runner: &'a R, contracts: ContractMap, admin: &SigningAccount) -> AstroportContracts {
         crate::astroport::utils::setup_astroport(runner, contracts, admin)
     }
 
-    fn increase_cw20_allowance(
-        &self,
-        cw20_addr: &str,
-        spender: &str,
-        amount: impl Into<Uint128>,
-        signer: &SigningAccount,
-    ) -> &Self {
+    fn increase_cw20_allowance(&self, cw20_addr: &str, spender: &str, amount: impl Into<Uint128>, signer: &SigningAccount) -> &Self {
         let msg = Cw20ExecuteMsg::IncreaseAllowance {
             spender: spender.to_string(),
             amount: amount.into(),
@@ -65,20 +51,13 @@ where
     fn query_asset_balance(&self, asset: &AssetInfo, address: &str) -> Uint128 {
         match asset {
             AssetInfo::NativeToken { denom } => self.query_native_token_balance(address, denom),
-            AssetInfo::Token { contract_addr } => {
-                self.query_cw20_balance(contract_addr.as_str(), address)
-            }
+            AssetInfo::Token { contract_addr } => self.query_cw20_balance(contract_addr.as_str(), address),
         }
     }
 
     /// Asserts that the balance of an Astroport AssetInfo for the given address is less than the
     /// expected amount.
-    fn assert_asset_balance_lt(
-        &self,
-        asset: &AssetInfo,
-        address: &str,
-        expected: impl Into<Uint128>,
-    ) -> &Self {
+    fn assert_asset_balance_lt(&self, asset: &AssetInfo, address: &str, expected: impl Into<Uint128>) -> &Self {
         let actual = self.query_asset_balance(asset, address);
         assert!(actual < expected.into());
         self
@@ -86,12 +65,7 @@ where
 
     /// Asserts that the balance of an Astroport AssetInfo for the given address is greater than the
     /// expected amount.
-    fn assert_asset_balance_gt(
-        &self,
-        asset: &AssetInfo,
-        address: &str,
-        expected: impl Into<Uint128>,
-    ) -> &Self {
+    fn assert_asset_balance_gt(&self, asset: &AssetInfo, address: &str, expected: impl Into<Uint128>) -> &Self {
         let actual = self.query_asset_balance(asset, address);
         assert!(actual > expected.into());
         self
@@ -99,12 +73,7 @@ where
 
     /// Asserts that the balance of an Astroport AssetInfo for the given address is equal to the
     /// expected amount.
-    fn assert_asset_balance_eq(
-        &self,
-        asset: &AssetInfo,
-        address: &str,
-        expected: impl Into<Uint128>,
-    ) -> &Self {
+    fn assert_asset_balance_eq(&self, asset: &AssetInfo, address: &str, expected: impl Into<Uint128>) -> &Self {
         let actual = self.query_asset_balance(asset, address);
         assert_eq!(actual, expected.into());
         self
@@ -127,58 +96,38 @@ where
     /// Queries the PairInfo of the given pair.
     fn query_pair_info(&self, pair_addr: &str) -> astroport::asset::PairInfo {
         let msg = astroport::pair::QueryMsg::Pair {};
-        self.wasm()
-            .query::<_, astroport::asset::PairInfo>(pair_addr, &msg)
-            .unwrap()
+        self.wasm().query::<_, astroport::asset::PairInfo>(pair_addr, &msg).unwrap()
     }
 
     /// Queries the PoolInfo of the given pair (contains the reserves and the total supply of LP tokens).
     fn query_pool(&self, pair_addr: &str) -> astroport::pair::PoolResponse {
         let msg = astroport::pair::QueryMsg::Pool {};
-        self.wasm()
-            .query::<_, astroport::pair::PoolResponse>(pair_addr, &msg)
-            .unwrap()
+        self.wasm().query::<_, astroport::pair::PoolResponse>(pair_addr, &msg).unwrap()
     }
 
     /// Queries the Config of the Astroport Factory contract.
     fn query_factory_config(&self, factory_addr: &str) -> ConfigResponse {
         let msg = astroport::factory::QueryMsg::Config {};
-        self.wasm()
-            .query::<_, ConfigResponse>(factory_addr, &msg)
-            .unwrap()
+        self.wasm().query::<_, ConfigResponse>(factory_addr, &msg).unwrap()
     }
 
     /// Queries the precision of a native denom on the coin registry.
     fn query_native_coin_registry(&self, denom: &str) -> RunnerResult<u8> {
         let contracts = self.astroport_contracts();
         let registry_addr = contracts.coin_registry.address.as_str();
-        let msg = astroport::native_coin_registry::QueryMsg::NativeToken {
-            denom: denom.to_string(),
-        };
+        let msg = astroport::native_coin_registry::QueryMsg::NativeToken { denom: denom.to_string() };
         self.wasm().query::<_, u8>(registry_addr, &msg)
     }
 
     /// Adds the given native coin denoms and their precisions to the registry.
-    fn add_native_coins_to_registry(
-        &self,
-        registry_addr: &str,
-        native_coins: Vec<(String, u8)>,
-        signer: &SigningAccount,
-    ) -> &Self {
+    fn add_native_coins_to_registry(&self, registry_addr: &str, native_coins: Vec<(String, u8)>, signer: &SigningAccount) -> &Self {
         let msg = astroport::native_coin_registry::ExecuteMsg::Add { native_coins };
-        self.wasm()
-            .execute(registry_addr, &msg, &[], signer)
-            .unwrap();
+        self.wasm().execute(registry_addr, &msg, &[], signer).unwrap();
         self
     }
 
     /// Provides liquidity to the given pair.
-    fn provide_liquidity(
-        &self,
-        pair_addr: &str,
-        assets: Vec<Asset>,
-        signer: &SigningAccount,
-    ) -> &Self {
+    fn provide_liquidity(&self, pair_addr: &str, assets: Vec<Asset>, signer: &SigningAccount) -> &Self {
         // Increase allowance for cw20 tokens and add coins to funds
         let mut funds = vec![];
         for asset in &assets {
@@ -189,9 +138,7 @@ where
                         amount: asset.amount,
                         expires: None,
                     };
-                    self.wasm()
-                        .execute(contract_addr.as_ref(), &msg, &[], signer)
-                        .unwrap();
+                    self.wasm().execute(contract_addr.as_ref(), &msg, &[], signer).unwrap();
                 }
                 AssetInfo::NativeToken { denom } => {
                     funds.push(Coin {
@@ -212,9 +159,7 @@ where
             auto_stake: Some(false),
             min_lp_to_receive: None,
         };
-        self.wasm()
-            .execute(pair_addr, &msg, &funds, signer)
-            .unwrap();
+        self.wasm().execute(pair_addr, &msg, &funds, signer).unwrap();
 
         self
     }
@@ -253,10 +198,8 @@ where
             asset_infos: asset_infos.to_vec(),
             init_params,
         };
-        let res = self
-            .wasm()
-            .execute(factory_addr, &msg, &[], signer)
-            .unwrap();
+        let fee_tokens = create_token_coins();
+        let res = self.wasm().execute(factory_addr, &msg, &fee_tokens, signer).unwrap();
 
         // Get pair and lp_token addresses from event
         let (pair_addr, lp_token) = parse_astroport_create_pair_events(&res.events);
@@ -309,9 +252,7 @@ where
                     amount: offer_asset.amount,
                     expires: None,
                 };
-                self.wasm()
-                    .execute(contract_addr.as_ref(), &msg, &[], signer)
-                    .unwrap();
+                self.wasm().execute(contract_addr.as_ref(), &msg, &[], signer).unwrap();
                 vec![]
             }
             AssetInfo::NativeToken { denom } => {
@@ -329,28 +270,16 @@ where
             max_spread,
             to: None,
         };
-        self.wasm()
-            .execute(pair_addr, &msg, &funds, signer)
-            .unwrap();
+        self.wasm().execute(pair_addr, &msg, &funds, signer).unwrap();
         self
     }
 
-    fn add_denom_precision_to_coin_registry(
-        &self,
-        denom: impl Into<String>,
-        precision: u8,
-        signer: &SigningAccount,
-    ) -> &Self {
+    fn add_denom_precision_to_coin_registry(&self, denom: impl Into<String>, precision: u8, signer: &SigningAccount) -> &Self {
         let msg = astroport::native_coin_registry::ExecuteMsg::Add {
             native_coins: vec![(denom.into(), precision)],
         };
         self.wasm()
-            .execute(
-                &self.astroport_contracts().coin_registry.address,
-                &msg,
-                &[],
-                signer,
-            )
+            .execute(&self.astroport_contracts().coin_registry.address, &msg, &[], signer)
             .unwrap();
         self
     }
@@ -393,8 +322,7 @@ where
     /// Uploads and instantiates the astroport contracts, returning a struct containing the the runner and
     /// contract addresses
     pub fn instantiate(runner: &'a R, admin: &SigningAccount, contract_map: ContractMap) -> Self {
-        let astroport_contracts =
-            Self::upload_and_init_astroport_contracts(runner, contract_map, admin);
+        let astroport_contracts = Self::upload_and_init_astroport_contracts(runner, contract_map, admin);
 
         Self {
             runner,
@@ -404,23 +332,25 @@ where
 
     /// Uploads and instantiates astroport contracts from local artifacts, returning a struct
     /// containing the the runner and contract addresses
-    pub fn instantiate_local(
-        runner: &'a TestRunner<'a>,
+    pub fn instantiate_local<S>(
+        runner: &'a TestRunner<'a, S>,
         admin: &SigningAccount,
         path: &Option<&str>,
         append_arch: bool,
         arch: &Option<&str>,
-    ) -> DefaultAstroportRobot<'a, TestRunner<'a>> {
+    ) -> DefaultAstroportRobot<'a, TestRunner<'a, S>>
+    where
+        S: MultiTestStargateBound,
+    {
         // Upload and instantiate astroport contracts
-        let astroport_contract_map =
-            super::utils::get_local_contracts(runner, path, append_arch, arch);
+        let astroport_contract_map = super::utils::get_local_contracts(runner, path, append_arch, arch);
 
-        DefaultAstroportRobot::<'a, TestRunner>::instantiate(runner, admin, astroport_contract_map)
+        DefaultAstroportRobot::<'a, TestRunner<S>>::instantiate(runner, admin, astroport_contract_map)
     }
 }
 
 // Feature gated because we use OsmosisTestApp by default
-#[cfg(feature = "osmosis-test-tube")]
+#[cfg(any(feature = "osmosis-test-tube", feature = "coreum-test-tube"))]
 #[cfg(test)]
 mod tests {
     use std::str::FromStr;
@@ -435,27 +365,29 @@ mod tests {
     use test_tube::{Account, SigningAccount};
 
     use super::AstroportTestRobot;
-    use crate::traits::CwItRunner;
-    use crate::{
-        astroport::utils::AstroportContracts, robot::TestRobot, ContractMap, OwnedTestRunner,
-        TestRunner,
-    };
+    use crate::{ContractMap, OwnedTestRunner, TestRunner, astroport::utils::AstroportContracts, robot::TestRobot, test_runner::DefaultStargate};
+    use crate::{traits::CwItRunner, MultiTestStargateBound};
     use cosmwasm_std::Addr;
 
-    struct TestingRobot<'a> {
-        runner: &'a TestRunner<'a>,
+    struct TestingRobot<'a, S = DefaultStargate>
+    where
+        S: MultiTestStargateBound,
+    {
+        runner: &'a TestRunner<'a, S>,
         accs: Vec<SigningAccount>,
         astroport_contracts: AstroportContracts,
     }
-    impl<'a> TestingRobot<'a> {
-        fn new(runner: &'a TestRunner<'a>, contracts: ContractMap) -> Self {
+    impl<'a, S> TestingRobot<'a, S>
+    where
+        S: MultiTestStargateBound,
+    {
+        fn new(runner: &'a TestRunner<'a, S>, contracts: ContractMap) -> Self {
             // Initialize accounts
             let accs = runner.init_default_accounts().unwrap();
             let admin = &accs[0];
 
             // Upload and initialize contracts
-            let astroport_contracts =
-                Self::upload_and_init_astroport_contracts(runner, contracts, admin);
+            let astroport_contracts = Self::upload_and_init_astroport_contracts(runner, contracts, admin);
 
             Self {
                 runner,
@@ -464,12 +396,12 @@ mod tests {
             }
         }
     }
-    impl<'a> TestRobot<'a, TestRunner<'a>> for TestingRobot<'a> {
-        fn runner(&self) -> &'a TestRunner<'a> {
+    impl<'a, S> TestRobot<'a, TestRunner<'a, S>> for TestingRobot<'a, S> where S: MultiTestStargateBound {
+        fn runner(&self) -> &'a TestRunner<'a, S> {
             self.runner
         }
     }
-    impl<'a> AstroportTestRobot<'a, TestRunner<'a>> for TestingRobot<'a> {
+    impl<'a, S> AstroportTestRobot<'a, TestRunner<'a, S>> for TestingRobot<'a, S> where S: MultiTestStargateBound {
         fn astroport_contracts(&self) -> &AstroportContracts {
             &self.astroport_contracts
         }
@@ -480,23 +412,27 @@ mod tests {
     pub const ARCH: Option<&str> = None;
 
     /// The path to the artifacts folder
-    pub const ARTIFACTS_PATH: Option<&str> = Some("artifacts/4d3be0e");
+    pub const ARTIFACTS_PATH: Option<&str> = Some("artifacts/coreum");
 
     /// Which TestRunner to use
+    #[cfg(not(feature = "coreum"))]
     pub const TEST_RUNNER: &str = "osmosis-test-app";
+    #[cfg(feature = "coreum")]
+    pub const TEST_RUNNER: &str = "coreum-test-app";
     // pub const TEST_RUNNER: &str = "multi-test";
 
     /// Get astroport artifacts already from disk
-    pub fn get_contracts(test_runner: &TestRunner) -> ContractMap {
-        crate::astroport::utils::get_local_contracts(
-            test_runner,
-            &ARTIFACTS_PATH,
-            APPEND_ARCH,
-            &ARCH,
-        )
+    pub fn get_contracts<S>(test_runner: &TestRunner<S>) -> ContractMap
+    where
+        S: MultiTestStargateBound,
+    {
+        crate::astroport::utils::get_local_contracts(test_runner, &ARTIFACTS_PATH, APPEND_ARCH, &ARCH)
     }
 
-    fn get_test_robot<'a>(runner: &'a TestRunner) -> TestingRobot<'a> {
+    fn get_test_robot<'a, S>(runner: &'a TestRunner<S>) -> TestingRobot<'a, S>
+    where
+        S: MultiTestStargateBound,
+    {
         let contracts = get_contracts(runner);
         TestingRobot::new(runner, contracts)
     }
@@ -507,9 +443,7 @@ mod tests {
             AssetInfo::NativeToken {
                 denom: "uatom".to_string(),
             },
-            AssetInfo::NativeToken {
-                denom: "uion".to_string(),
-            },
+            AssetInfo::NativeToken { denom: "uion".to_string() },
         ]
     }
 
@@ -536,13 +470,7 @@ mod tests {
 
     /// Returns some stable pool initialization params.
     fn stable_init_params() -> Option<Binary> {
-        Some(
-            to_json_binary(&StablePoolParams {
-                amp: 10,
-                owner: None,
-            })
-            .unwrap(),
-        )
+        Some(to_json_binary(&StablePoolParams { amp: 10, owner: None }).unwrap())
     }
 
     #[test]
@@ -598,30 +526,21 @@ mod tests {
 
         if let Some(initial_liq) = initial_liquidity {
             // Check lp token balance
-            let lp_token_balance =
-                robot.query_native_token_balance(admin.address(), lp_token_denom);
+            let lp_token_balance = robot.query_native_token_balance(admin.address(), lp_token_denom);
             assert_ne!(lp_token_balance, Uint128::zero());
 
             // Check pair reserves
             let pool_res = robot.query_pool(&pair_addr);
 
-            pool_res
-                .assets
-                .iter()
-                .zip(initial_liq.iter())
-                .for_each(|(asset, liq)| {
-                    assert_eq!(asset.amount.u128(), *liq);
-                });
+            pool_res.assets.iter().zip(initial_liq.iter()).for_each(|(asset, liq)| {
+                assert_eq!(asset.amount.u128(), *liq);
+            });
         }
     }
 
     #[test_case(PairType::Xyk {},AssetChoice::NativeNative,None; "Swap on XYK, native-native")]
     #[test_case(PairType::Xyk {},AssetChoice::NativeCw20,None; "Swap on XYK, native-cw20")]
-    fn test_swap_on_pair(
-        pair_type: PairType,
-        asset_info_choice: AssetChoice,
-        init_params: Option<Binary>,
-    ) {
+    fn test_swap_on_pair(pair_type: PairType, asset_info_choice: AssetChoice, init_params: Option<Binary>) {
         let owned_runner = OwnedTestRunner::from_str(TEST_RUNNER).unwrap();
         let runner = owned_runner.as_ref();
         let contracts = get_contracts(&runner);
@@ -633,14 +552,8 @@ mod tests {
 
         let asset_infos = get_asset_infos(asset_info_choice, &contracts.astro_cw20_token.address);
         let initial_liquidity = Some(&[420420u128, 696969u128]);
-        let (pair_addr, _lp_token_denom) = robot.create_astroport_pair(
-            pair_type,
-            &asset_infos,
-            init_params,
-            admin,
-            initial_liquidity,
-            Some(&[6, 6]),
-        );
+        let (pair_addr, _lp_token_denom) =
+            robot.create_astroport_pair(pair_type, &asset_infos, init_params, admin, initial_liquidity, Some(&[6, 6]));
 
         let swap_amount = Uint128::from(1000u128);
         let offer_asset_info = &asset_infos[0];
@@ -651,11 +564,7 @@ mod tests {
         let ask_asset_info = &asset_infos[1];
 
         // First simulate
-        let simulation = robot.query_simulate_swap(
-            &pair_addr,
-            offer_asset.clone(),
-            Some(ask_asset_info.clone()),
-        );
+        let simulation = robot.query_simulate_swap(&pair_addr, offer_asset.clone(), Some(ask_asset_info.clone()));
 
         // Query balance before swap
         let offer_balance_before = robot.query_asset_balance(&offer_asset.info, admin_addr);
@@ -663,24 +572,9 @@ mod tests {
 
         //Perform swap and assert result
         robot
-            .swap_on_astroport_pair(
-                &pair_addr,
-                offer_asset,
-                Some(ask_asset_info.clone()),
-                None,
-                None,
-                admin,
-            )
-            .assert_asset_balance_eq(
-                offer_asset_info,
-                admin_addr,
-                offer_balance_before - swap_amount,
-            )
-            .assert_asset_balance_eq(
-                ask_asset_info,
-                admin_addr,
-                ask_balance_before + simulation.return_amount,
-            );
+            .swap_on_astroport_pair(&pair_addr, offer_asset, Some(ask_asset_info.clone()), None, None, admin)
+            .assert_asset_balance_eq(offer_asset_info, admin_addr, offer_balance_before - swap_amount)
+            .assert_asset_balance_eq(ask_asset_info, admin_addr, ask_balance_before + simulation.return_amount);
     }
 
     #[test]

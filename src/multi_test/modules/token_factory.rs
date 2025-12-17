@@ -1,21 +1,23 @@
 use std::str::FromStr;
 
-use anyhow::{bail, Ok};
+use anyhow::{anyhow, bail, Result as AnyResult};
 use cosmwasm_std::{
-    from_json, Addr, Api, BankMsg, BankQuery, BlockInfo, Coin, Empty, Event, QueryRequest, Storage,
-    SupplyResponse, Uint128,
+    from_json, Addr, Api, BankMsg, BankQuery, Binary, BlockInfo, Coin, Empty, Event, Querier, QueryRequest, Storage, SupplyResponse,
+    Uint128,
 };
 use osmosis_std::types::osmosis::tokenfactory::v1beta1::{
     MsgBurn, MsgBurnResponse, MsgCreateDenom, MsgCreateDenomResponse, MsgMint, MsgMintResponse,
 };
 use regex::Regex;
 
-use apollo_cw_multi_test::{
-    AppResponse, BankSudo, CosmosRouter, StargateKeeper, StargateMessageHandler, StargateMsg,
-};
+use cw_multi_test::{AppResponse, BankSudo, CosmosRouter, Executor, Module, Stargate, StargateMsg, StargateQuery};
 
-/// This is a struct that implements the [`apollo_cw_multi_test::StargateMessageHandler`] trait to
-/// mimic the behavior of the Osmosis TokenFactory module version 0.15.
+use crate::traits::DEFAULT_COIN_DENOM;
+
+const DEFAULT_INIT: &str = constcat::concat!("10000000", DEFAULT_COIN_DENOM);
+
+/// This is a struct that implements the [`cw_multi_test::Stargate`] trait to
+/// mimic the behavior of the Osmosis TokenFactory module.
 #[derive(Clone)]
 pub struct TokenFactory<'a> {
     pub module_denom_prefix: &'a str,
@@ -46,65 +48,50 @@ impl<'a> TokenFactory<'a> {
 
 impl Default for TokenFactory<'_> {
     fn default() -> Self {
-        Self::new("factory", 32, 16, 59 + 16, "10000000uosmo")
+        Self::new("factory", 32, 16, 59 + 16, DEFAULT_INIT)
     }
 }
 
 impl TokenFactory<'_> {
-    fn create_denom(
+    fn create_denom<ExecC, QueryC>(
         &self,
         api: &dyn Api,
         storage: &mut dyn Storage,
-        router: &dyn CosmosRouter<ExecC = Empty, QueryC = Empty>,
+        router: &dyn CosmosRouter<ExecC = ExecC, QueryC = QueryC>,
         block: &BlockInfo,
         sender: Addr,
-        msg: StargateMsg,
-    ) -> anyhow::Result<AppResponse> {
-        let msg: MsgCreateDenom = msg.value.try_into()?;
+        value: Binary,
+    ) -> AnyResult<AppResponse>
+    where
+        ExecC: cosmwasm_std::CustomMsg + serde::de::DeserializeOwned + 'static,
+        QueryC: cosmwasm_std::CustomQuery + serde::de::DeserializeOwned + 'static,
+    {
+        let msg: MsgCreateDenom = value.try_into()?;
 
-        //Validate subdenom length
+        // Validate subdenom length
         if msg.subdenom.len() > self.max_subdenom_len {
-            bail!(
-                "Subdenom length is too long, max length is {}",
-                self.max_subdenom_len
-            );
+            bail!("Subdenom length is too long, max length is {}", self.max_subdenom_len);
         }
         // Validate creator length
         if msg.sender.len() > self.max_creator_len {
-            bail!(
-                "Creator length is too long, max length is {}",
-                self.max_creator_len
-            );
+            bail!("Creator length is too long, max length is {}", self.max_creator_len);
         }
         // Validate creator address not contains '/'
         if msg.sender.contains('/') {
             bail!("Invalid creator address, creator address cannot contains '/'");
         }
         // Validate sender is the creator
-        if msg.sender != sender {
+        if msg.sender != sender.to_string() {
             bail!("Invalid creator address, creator address must be the same as the sender");
         }
 
-        let denom = format!(
-            "{}/{}/{}",
-            self.module_denom_prefix, msg.sender, msg.subdenom
-        );
-
-        println!("denom: {}", denom);
+        let denom = format!("{}/{}/{}", self.module_denom_prefix, msg.sender, msg.subdenom);
 
         // Query supply of denom
-        let request = QueryRequest::Bank(BankQuery::Supply {
-            denom: denom.clone(),
-        });
+        let request = QueryRequest::Bank(BankQuery::Supply { denom: denom.clone() });
         let raw = router.query(api, storage, block, request)?;
         let supply: SupplyResponse = from_json(raw)?;
-        println!("supply: {:?}", supply);
-        println!(
-            "supply.amount.amount.is_zero: {:?}",
-            supply.amount.amount.is_zero()
-        );
         if !supply.amount.amount.is_zero() {
-            println!("bailing");
             bail!("Subdenom already exists");
         }
 
@@ -128,34 +115,38 @@ impl TokenFactory<'_> {
         Ok(res)
     }
 
-    pub fn mint(
+    pub fn mint<ExecC, QueryC>(
         &self,
         api: &dyn Api,
         storage: &mut dyn Storage,
-        router: &dyn CosmosRouter<ExecC = Empty, QueryC = Empty>,
+        router: &dyn CosmosRouter<ExecC = ExecC, QueryC = QueryC>,
         block: &BlockInfo,
         sender: Addr,
-        msg: StargateMsg,
-    ) -> anyhow::Result<AppResponse> {
-        let msg: MsgMint = msg.value.try_into()?;
+        value: Binary,
+    ) -> AnyResult<AppResponse>
+    where
+        ExecC: cosmwasm_std::CustomMsg + serde::de::DeserializeOwned + 'static,
+        QueryC: cosmwasm_std::CustomQuery + serde::de::DeserializeOwned + 'static,
+    {
+        let msg: MsgMint = value.try_into()?;
 
-        let denom = msg.amount.clone().unwrap().denom;
+        let denom = msg.amount.clone().ok_or_else(|| anyhow!("missing amount"))?.denom;
 
         // Validate sender
         let parts = denom.split('/').collect::<Vec<_>>();
-        if parts[1] != sender {
-            bail!("Unauthorized mint. Not the creator of the denom.");
-        }
-        if sender != msg.sender {
-            bail!("Invalid sender. Sender in msg must be same as sender of transaction.");
-        }
-
-        // Validate denom
         if parts.len() != 3 && parts[0] != self.module_denom_prefix {
             bail!("Invalid denom");
         }
 
-        let amount = Uint128::from_str(&msg.amount.unwrap().amount)?;
+        if parts[1] != sender.to_string() {
+            bail!("Unauthorized mint. Not the creator of the denom.");
+        }
+        if sender.to_string() != msg.sender {
+            bail!("Invalid sender. Sender in msg must be same as sender of transaction.");
+        }
+
+        let amount_str = msg.amount.as_ref().ok_or_else(|| anyhow!("missing amount"))?.amount.clone();
+        let amount = Uint128::from_str(&amount_str)?;
         if amount.is_zero() {
             bail!("Invalid zero amount");
         }
@@ -191,33 +182,37 @@ impl TokenFactory<'_> {
         Ok(res)
     }
 
-    pub fn burn(
+    pub fn burn<ExecC, QueryC>(
         &self,
         api: &dyn Api,
         storage: &mut dyn Storage,
-        router: &dyn CosmosRouter<ExecC = Empty, QueryC = Empty>,
+        router: &dyn CosmosRouter<ExecC = ExecC, QueryC = QueryC>,
         block: &BlockInfo,
         sender: Addr,
-        msg: StargateMsg,
-    ) -> anyhow::Result<AppResponse> {
-        let msg: MsgBurn = msg.value.try_into()?;
+        value: Binary,
+    ) -> AnyResult<AppResponse>
+    where
+        ExecC: cosmwasm_std::CustomMsg + serde::de::DeserializeOwned + 'static,
+        QueryC: cosmwasm_std::CustomQuery + serde::de::DeserializeOwned + 'static,
+    {
+        let msg: MsgBurn = value.try_into()?;
 
-        // Validate sender
-        let denom = msg.amount.clone().unwrap().denom;
+        let denom = msg.amount.clone().ok_or_else(|| anyhow!("missing amount"))?.denom;
+
         let parts = denom.split('/').collect::<Vec<_>>();
-        if parts[1] != sender {
-            bail!("Unauthorized burn. Not the creator of the denom.");
-        }
-        if sender != msg.sender {
-            bail!("Invalid sender. Sender in msg must be same as sender of transaction.");
-        }
-
-        // Validate denom
         if parts.len() != 3 && parts[0] != self.module_denom_prefix {
             bail!("Invalid denom");
         }
 
-        let amount = Uint128::from_str(&msg.amount.unwrap().amount)?;
+        if parts[1] != sender.to_string() {
+            bail!("Unauthorized burn. Not the creator of the denom.");
+        }
+        if sender.to_string() != msg.sender {
+            bail!("Invalid sender. Sender in msg must be same as sender of transaction.");
+        }
+
+        let amount_str = msg.amount.as_ref().ok_or_else(|| anyhow!("missing amount"))?.amount.clone();
+        let amount = Uint128::from_str(&amount_str)?;
         if amount.is_zero() {
             bail!("Invalid zero amount");
         }
@@ -243,42 +238,93 @@ impl TokenFactory<'_> {
 
         Ok(res)
     }
-}
 
-impl StargateMessageHandler<Empty, Empty> for TokenFactory<'_> {
-    fn execute(
+    /// Shared internal handler for `CosmosMsg::Stargate`.
+    fn handle_any<ExecC, QueryC>(
         &self,
         api: &dyn Api,
         storage: &mut dyn Storage,
-        router: &dyn CosmosRouter<ExecC = Empty, QueryC = Empty>,
+        router: &dyn CosmosRouter<ExecC = ExecC, QueryC = QueryC>,
         block: &BlockInfo,
         sender: Addr,
-        msg: StargateMsg,
-    ) -> anyhow::Result<AppResponse> {
-        match msg.type_url.as_str() {
-            MsgCreateDenom::TYPE_URL => self.create_denom(api, storage, router, block, sender, msg),
-            MsgMint::TYPE_URL => self.mint(api, storage, router, block, sender, msg),
-            MsgBurn::TYPE_URL => self.burn(api, storage, router, block, sender, msg),
-            _ => bail!("Unknown message type {}", msg.type_url),
+        type_url: String,
+        value: Binary,
+    ) -> AnyResult<AppResponse>
+    where
+        ExecC: cosmwasm_std::CustomMsg + serde::de::DeserializeOwned + 'static,
+        QueryC: cosmwasm_std::CustomQuery + serde::de::DeserializeOwned + 'static,
+    {
+        match type_url.as_str() {
+            MsgCreateDenom::TYPE_URL => self.create_denom(api, storage, router, block, sender, value),
+            MsgMint::TYPE_URL => self.mint(api, storage, router, block, sender, value),
+            MsgBurn::TYPE_URL => self.burn(api, storage, router, block, sender, value),
+            _ => bail!("Unknown message type {}", type_url),
         }
-    }
-
-    fn register_msgs(&'static self, keeper: &mut StargateKeeper<Empty, Empty>) {
-        keeper.register_msg(MsgCreateDenom::TYPE_URL, Box::new(self.clone()));
-        keeper.register_msg(MsgMint::TYPE_URL, Box::new(self.clone()));
-        keeper.register_msg(MsgBurn::TYPE_URL, Box::new(self.clone()));
     }
 }
 
-fn coin_from_sdk_string(sdk_string: &str) -> anyhow::Result<Coin> {
+// Implement the generic Module interface using StargateMsg/StargateQuery.
+impl<'a> Module for TokenFactory<'a> {
+    type ExecT = StargateMsg;
+    type QueryT = StargateQuery;
+    type SudoT = Empty;
+
+    fn execute<ExecC, QueryC>(
+        &self,
+        api: &dyn Api,
+        storage: &mut dyn Storage,
+        router: &dyn CosmosRouter<ExecC = ExecC, QueryC = QueryC>,
+        block: &BlockInfo,
+        sender: Addr,
+        msg: Self::ExecT,
+    ) -> AnyResult<AppResponse>
+    where
+        ExecC: cosmwasm_std::CustomMsg + serde::de::DeserializeOwned + 'static,
+        QueryC: cosmwasm_std::CustomQuery + serde::de::DeserializeOwned + 'static,
+    {
+        let StargateMsg { type_url, value, .. } = msg;
+
+        self.handle_any(api, storage, router, block, sender, type_url, value)
+            .map_err(|e| anyhow!(e.to_string()))
+    }
+
+    fn query(
+        &self,
+        _api: &dyn Api,
+        _storage: &dyn Storage,
+        _querier: &dyn Querier,
+        _block: &BlockInfo,
+        request: Self::QueryT,
+    ) -> AnyResult<Binary> {
+        Err(anyhow!("Unexpected stargate query: path={}, data={:?}", request.path, request.data))
+    }
+
+    fn sudo<ExecC, QueryC>(
+        &self,
+        _api: &dyn Api,
+        _storage: &mut dyn Storage,
+        _router: &dyn CosmosRouter<ExecC = ExecC, QueryC = QueryC>,
+        _block: &BlockInfo,
+        _msg: Self::SudoT,
+    ) -> AnyResult<AppResponse>
+    where
+        ExecC: cosmwasm_std::CustomMsg + serde::de::DeserializeOwned + 'static,
+        QueryC: cosmwasm_std::CustomQuery + serde::de::DeserializeOwned + 'static,
+    {
+        // TokenFactory doesn't use sudo.
+        Ok(AppResponse::default())
+    }
+}
+
+// Mark it as a Stargate module
+impl<'a> Stargate for TokenFactory<'a> {}
+
+fn coin_from_sdk_string(sdk_string: &str) -> AnyResult<Coin> {
     let denom_re = Regex::new(r"^[0-9]+[a-z]+$")?;
     let ibc_re = Regex::new(r"^[0-9]+(ibc|IBC)/[0-9A-F]{64}$")?;
     let factory_re = Regex::new(r"^[0-9]+factory/[0-9a-z]+/[0-9a-zA-Z]+$")?;
 
-    if !(denom_re.is_match(sdk_string)
-        || ibc_re.is_match(sdk_string)
-        || factory_re.is_match(sdk_string))
-    {
+    if !(denom_re.is_match(sdk_string) || ibc_re.is_match(sdk_string) || factory_re.is_match(sdk_string)) {
         bail!("Invalid sdk string");
     }
 
@@ -295,41 +341,30 @@ fn coin_from_sdk_string(sdk_string: &str) -> anyhow::Result<Coin> {
 
 #[cfg(test)]
 mod tests {
-    use cosmwasm_std::{BalanceResponse, Binary, Coin};
-
-    use apollo_cw_multi_test::{BasicAppBuilder, Executor, StargateKeeper};
-
     use super::*;
-
+    use cosmwasm_std::{BalanceResponse, Binary as StdBinary, CosmosMsg};
+    use cw_multi_test::{BasicAppBuilder, Executor};
     use test_case::test_case;
 
-    const TOKEN_FACTORY: &TokenFactory =
-        &TokenFactory::new("factory", 32, 16, 59 + 16, "10000000uosmo");
+    const TOKEN_FACTORY: TokenFactory<'static> = TokenFactory::new("factory", 32, 16, 59 + 16, DEFAULT_INIT);
 
-    #[test_case(Addr::unchecked("sender"), "subdenom", &["10000000uosmo"]; "valid denom")]
-    #[test_case(Addr::unchecked("sen/der"), "subdenom", &["10000000uosmo"] => panics "creator address cannot contains" ; "invalid creator address")]
-    #[test_case(Addr::unchecked("asdasdasdasdasdasdasdasdasdasdasdasdasdasdasd"), "subdenom", &["10000000uosmo"] => panics ; "creator address too long")]
-    #[test_case(Addr::unchecked("sender"), "subdenom", &["10000000uosmo", "100factory/sender/subdenom"] => panics "Subdenom already exists" ; "denom exists")]
-    #[test_case(Addr::unchecked("sender"), "subdenom", &["100000uosmo"] => panics "Cannot Sub" ; "insufficient funds for fee")]
+    #[test_case(Addr::unchecked("sender"), "subdenom", &[DEFAULT_INIT]; "valid denom")]
+    #[test_case(Addr::unchecked("sen/der"), "subdenom", &[DEFAULT_INIT] => panics "creator address cannot contains" ; "invalid creator address")]
+    #[test_case(Addr::unchecked("asdasdasdasdasdasdasdasdasdasdasdasdasdasdasd"), "subdenom", &[DEFAULT_INIT] => panics ; "creator address too long")]
+    #[test_case(Addr::unchecked("sender"), "subdenom", &[DEFAULT_INIT, "100factory/sender/subdenom"] => panics "Subdenom already exists" ; "denom exists")]
+    #[test_case(Addr::unchecked("sender"), "subdenom", &[constcat::concat!("100000", DEFAULT_COIN_DENOM)] => panics "Cannot Sub" ; "insufficient funds for fee")]
     fn create_denom(sender: Addr, subdenom: &str, initial_coins: &[&str]) {
-        let initial_coins = initial_coins
-            .iter()
-            .map(|s| coin_from_sdk_string(s).unwrap())
-            .collect::<Vec<_>>();
+        let initial_coins = initial_coins.iter().map(|s| coin_from_sdk_string(s).unwrap()).collect::<Vec<_>>();
 
-        let mut stargate_keeper = StargateKeeper::new();
-        TOKEN_FACTORY.register_msgs(&mut stargate_keeper);
+        let stargate = TOKEN_FACTORY.clone();
 
-        let app = BasicAppBuilder::<Empty, Empty>::new()
-            .with_stargate(stargate_keeper)
+        let mut app = BasicAppBuilder::<Empty, Empty>::new()
+            .with_stargate(stargate)
             .build(|router, _, storage| {
-                router
-                    .bank
-                    .init_balance(storage, &sender, initial_coins)
-                    .unwrap();
+                router.bank.init_balance(storage, &sender, initial_coins).unwrap();
             });
 
-        let msg = StargateMsg {
+        let msg = CosmosMsg::<Empty>::Stargate {
             type_url: MsgCreateDenom::TYPE_URL.to_string(),
             value: MsgCreateDenom {
                 sender: sender.to_string(),
@@ -338,27 +373,21 @@ mod tests {
             .into(),
         };
 
-        let res = app.execute(sender.clone(), msg.into()).unwrap();
+        let res = app.execute(sender.clone(), msg).unwrap();
 
         res.assert_event(
             &Event::new("create_denom")
                 .add_attribute("creator", sender.to_string())
                 .add_attribute(
                     "new_token_denom",
-                    format!(
-                        "{}/{}/{}",
-                        TOKEN_FACTORY.module_denom_prefix, sender, subdenom
-                    ),
+                    format!("{}/{}/{}", TOKEN_FACTORY.module_denom_prefix, sender, subdenom),
                 ),
         );
 
         assert_eq!(
             res.data.unwrap(),
-            Binary::from(MsgCreateDenomResponse {
-                new_token_denom: format!(
-                    "{}/{}/{}",
-                    TOKEN_FACTORY.module_denom_prefix, sender, subdenom
-                )
+            StdBinary::from(MsgCreateDenomResponse {
+                new_token_denom: format!("{}/{}/{}", TOKEN_FACTORY.module_denom_prefix, sender, subdenom)
             })
         );
     }
@@ -367,24 +396,18 @@ mod tests {
     #[test_case(Addr::unchecked("sender"), Addr::unchecked("sender"), 0u128 => panics "Invalid zero amount" ; "zero amount")]
     #[test_case(Addr::unchecked("sender"), Addr::unchecked("creator"), 1000u128 => panics "Unauthorized mint. Not the creator of the denom." ; "sender is not creator")]
     fn mint(sender: Addr, creator: Addr, mint_amount: u128) {
-        let mut stargate_keeper = StargateKeeper::new();
-        TOKEN_FACTORY.register_msgs(&mut stargate_keeper);
+        let stargate = TOKEN_FACTORY.clone();
 
-        let app = BasicAppBuilder::<Empty, Empty>::new()
-            .with_stargate(stargate_keeper)
-            .build(|_, _, _| {});
+        let mut app = BasicAppBuilder::<Empty, Empty>::new().with_stargate(stargate).build(|_, _, _| {});
 
-        let msg = StargateMsg {
+        let msg = CosmosMsg::<Empty>::Stargate {
             type_url: MsgMint::TYPE_URL.to_string(),
             value: MsgMint {
                 sender: sender.to_string(),
                 amount: Some(
-                    Coin {
-                        denom: format!(
-                            "{}/{}/{}",
-                            TOKEN_FACTORY.module_denom_prefix, creator, "subdenom"
-                        ),
-                        amount: Uint128::from(mint_amount),
+                    osmosis_std::types::cosmos::base::v1beta1::Coin {
+                        denom: format!("{}/{}/{}", TOKEN_FACTORY.module_denom_prefix, creator, "subdenom"),
+                        amount: Uint128::from(mint_amount).to_string(),
                     }
                     .into(),
                 ),
@@ -393,29 +416,21 @@ mod tests {
             .into(),
         };
 
-        let res = app.execute(sender.clone(), msg.into()).unwrap();
+        let res = app.execute(sender.clone(), msg).unwrap();
 
         // Assert event
         res.assert_event(
             &Event::new("tf_mint")
                 .add_attribute("mint_to_address", sender.to_string())
-                .add_attribute("amount", "1000"),
+                .add_attribute("amount", mint_amount.to_string()),
         );
 
         // Query bank balance
         let balance_query = BankQuery::Balance {
             address: sender.to_string(),
-            denom: format!(
-                "{}/{}/{}",
-                TOKEN_FACTORY.module_denom_prefix, creator, "subdenom"
-            ),
+            denom: format!("{}/{}/{}", TOKEN_FACTORY.module_denom_prefix, creator, "subdenom"),
         };
-        let balance = app
-            .wrap()
-            .query::<BalanceResponse>(&balance_query.into())
-            .unwrap()
-            .amount
-            .amount;
+        let balance = app.wrap().query::<BalanceResponse>(&balance_query.into()).unwrap().amount.amount;
         assert_eq!(balance, Uint128::from(mint_amount));
     }
 
@@ -425,16 +440,12 @@ mod tests {
     #[test_case(Addr::unchecked("sender"), Addr::unchecked("sender"), 0u128, 1000u128 => panics "Invalid zero amount" ; "zero amount")]
     #[test_case(Addr::unchecked("sender"), Addr::unchecked("sender"), 2000u128, 1000u128 => panics "Cannot Sub" ; "insufficient funds")]
     fn burn(sender: Addr, creator: Addr, burn_amount: u128, initial_balance: u128) {
-        let mut stargate_keeper = StargateKeeper::new();
-        TOKEN_FACTORY.register_msgs(&mut stargate_keeper);
+        let stargate = TOKEN_FACTORY.clone();
 
-        let tf_denom = format!(
-            "{}/{}/{}",
-            TOKEN_FACTORY.module_denom_prefix, creator, "subdenom"
-        );
+        let tf_denom = format!("{}/{}/{}", TOKEN_FACTORY.module_denom_prefix, creator, "subdenom");
 
-        let app = BasicAppBuilder::<Empty, Empty>::new()
-            .with_stargate(stargate_keeper)
+        let mut app = BasicAppBuilder::<Empty, Empty>::new()
+            .with_stargate(stargate)
             .build(|router, _, storage| {
                 router
                     .bank
@@ -449,15 +460,14 @@ mod tests {
                     .unwrap();
             });
 
-        // Execute burn
-        let msg = StargateMsg {
+        let msg = CosmosMsg::<Empty>::Stargate {
             type_url: MsgBurn::TYPE_URL.to_string(),
             value: MsgBurn {
                 sender: sender.to_string(),
                 amount: Some(
-                    Coin {
+                    osmosis_std::types::cosmos::base::v1beta1::Coin {
                         denom: tf_denom.clone(),
-                        amount: Uint128::from(burn_amount),
+                        amount: Uint128::from(burn_amount).to_string(),
                     }
                     .into(),
                 ),
@@ -465,13 +475,14 @@ mod tests {
             }
             .into(),
         };
-        let res = app.execute(sender.clone(), msg.into()).unwrap();
+
+        let res = app.execute(sender.clone(), msg).unwrap();
 
         // Assert event
         res.assert_event(
             &Event::new("tf_burn")
                 .add_attribute("burn_from_address", sender.to_string())
-                .add_attribute("amount", "1000"),
+                .add_attribute("amount", burn_amount.to_string()),
         );
 
         // Query bank balance
@@ -479,16 +490,11 @@ mod tests {
             address: sender.to_string(),
             denom: tf_denom,
         };
-        let balance = app
-            .wrap()
-            .query::<BalanceResponse>(&balance_query.into())
-            .unwrap()
-            .amount
-            .amount;
+        let balance = app.wrap().query::<BalanceResponse>(&balance_query.into()).unwrap().amount.amount;
         assert_eq!(balance.u128(), initial_balance - burn_amount);
     }
 
-    #[test_case("uosmo" ; "native denom")]
+    #[test_case(DEFAULT_COIN_DENOM ; "native denom")]
     #[test_case("IBC/27394FB092D2ECCD56123C74F36E4C1F926001CEADA9CA97EA622B25F41E5EB2" ; "ibc denom")]
     #[test_case("IBC/27394FB092D2ECCD56123CA622B25F41E5EB2" => panics "Invalid sdk string" ; "invalid ibc denom")]
     #[test_case("IB/27394FB092D2ECCD56123C74F36E4C1F926001CEADA9CA97EA622B25F41E5EB2" => panics "Invalid sdk string" ; "invalid ibc denom 2")]

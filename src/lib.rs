@@ -11,6 +11,10 @@ pub mod osmosis_test_app;
 #[cfg(feature = "osmosis-test-tube")]
 pub use osmosis_test_app::WhitelistForceUnlock;
 
+/// This module contains the implementation of the `CwItRunner` trait for the `OsmosisTestApp` struct.
+#[cfg(feature = "coreum-test-tube")]
+pub mod coreum_test_app;
+
 #[cfg(feature = "multi-test")]
 #[cfg(test)]
 mod test_helpers;
@@ -47,5 +51,20 @@ pub use test_tube;
 #[cfg(feature = "osmosis-test-tube")]
 pub use osmosis_test_tube;
 
+#[cfg(feature = "coreum-test-tube")]
+pub use coreum_test_tube;
+
 #[cfg(feature = "multi-test")]
-pub use apollo_cw_multi_test as cw_multi_test;
+pub use cw_multi_test as cw_multi_test;
+
+// When multi-test is ON, this trait *includes* Stargate
+#[cfg(feature = "multi-test")]
+pub trait MultiTestStargateBound: cw_multi_test::Stargate + 'static {}
+#[cfg(feature = "multi-test")]
+impl<T> MultiTestStargateBound for T where T: cw_multi_test::Stargate + 'static {}
+// When multi-test is OFF, it's just a 'static marker with no cw-multi-test dependency
+#[cfg(not(feature = "multi-test"))]
+pub trait MultiTestStargateBound: 'static {}
+
+#[cfg(not(feature = "multi-test"))]
+impl<T> MultiTestStargateBound for T where T: 'static {}

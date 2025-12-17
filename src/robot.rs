@@ -90,7 +90,7 @@ pub trait TestRobot<'a, R: Runner<'a> + 'a> {
 
 #[cfg(feature = "osmosis-test-tube")]
 #[cfg(test)]
-mod tests {
+mod osmosis_robot_tests {
     use osmosis_test_tube::{Account, OsmosisTestApp};
 
     use super::*;
@@ -128,6 +128,67 @@ mod tests {
             .init_account(&[
                 Coin::new(100_000_000_000_000_000u128, "uatom"),
                 Coin::new(100_000_000_000_000_000u128, "uosmo"), //uosmo needed to pay gas
+            ])
+            .unwrap();
+        let account2 = app.init_account(&[]).unwrap();
+
+        robot
+            .send_native_tokens(
+                &account1,
+                account2.address(),
+                1_000_000_000_000_000u128,
+                "uatom",
+            )
+            .assert_native_token_balance_eq(account2.address(), "uatom", 1_000_000_000_000_000u128)
+            .assert_native_token_balance_eq(
+                account1.address(),
+                "uatom",
+                99_000_000_000_000_000u128,
+            );
+    }
+}
+
+#[cfg(feature = "coreum-test-tube")]
+#[cfg(test)]
+mod coreum_robot_tests {
+    use crate::coreum_test_app::CoreumTestApp;
+    use test_tube::{Account};
+
+    use super::*;
+
+    struct CoreumTestAppRobot<'a>(&'a CoreumTestApp);
+
+    impl<'a> TestRobot<'a, CoreumTestApp> for CoreumTestAppRobot<'a> {
+        fn runner(&self) -> &'a CoreumTestApp {
+            self.0
+        }
+    }
+
+    #[test]
+    fn test_query_native_token_balance() {
+        let app = CoreumTestApp::new();
+        let robot = CoreumTestAppRobot(&app);
+
+        let account = app
+            .init_account(&[Coin::new(100_000_000_000_000_000u128, "uatom")])
+            .unwrap();
+
+        let balance = robot.query_native_token_balance(account.address(), "uatom");
+        assert_eq!(balance, Uint128::from(100_000_000_000_000_000u128));
+
+        let balance = robot.query_native_token_balance(account.address(), "ucore");
+        assert_eq!(balance, Uint128::zero());
+    }
+
+    #[test]
+    fn test_send_native_tokens() {
+        let app = CoreumTestApp::new();
+        let robot = CoreumTestAppRobot(&app);
+
+        let account1 = app
+            .init_account(&[
+                Coin::new(100_000_000_000_000_000u128, "uatom"),
+                Coin::new(100_000_000_000_000_000u128, "ucore"), //ucore needed to pay gas
             ])
             .unwrap();
         let account2 = app.init_account(&[]).unwrap();

@@ -1,13 +1,13 @@
 [package]
-name        = "cw-it"
-version     = "0.4.0"
-authors     = ["Pacman <pacman@apollo.farm>", "Sturdy <sturdy@apollo.farm>"]
-edition     = "2021"
-license     = "MPL-2.0"
-description = "A crate of utils for integration testing CosmWasm smart contracts"
+name          = "cw-it"
+version       = "0.4.0"
+authors       = ["Pacman <pacman@apollo.farm>", "Sturdy <sturdy@apollo.farm>", "Henk ter Harmsel <henk@xpunks.club>"]
+edition       = "2021"
+license       = "MPL-2.0"
+description   = "A crate of utils for integration testing CosmWasm smart contracts"
 documentation = "https://docs.rs/cw-it"
-repository  = "https://github.com/apollodao/cw-it"
-readme      = "README.md"
+repository    = "https://github.com/onxrp/cw-it"
+readme        = "README.md"
 
 exclude = [
   # Those files are rust-optimizer artifacts. You might want to commit them for convenience but they should not be part of the source code publication.
@@ -32,30 +32,16 @@ incremental      = false
 overflow-checks  = true
 
 [features]
-default = []
-astroport = ["cw20", "dep:astroport", "dep:astroport_v2"]
-osmosis = ["proptest", "apollo-utils", "osmosis-test-tube"]
-rpc-runner = ["bip32"]
-chain-download = ["tokio"]
-multi-test = ["bech32", "sha2", "apollo-cw-multi-test", "paste", "regex"]
-astroport-multi-test = [
-  "multi-test",
-  "astroport",
-  "astroport-token",
-  "astroport-native-coin-registry",
-  "astroport-factory",
-  "astroport-maker",
-  "astroport-pair-stable",
-  "astroport-pair",
-  "astroport-router",
-  "astroport-staking",
-  "astroport-vesting",
-  "astroport-whitelist",
-  "astroport-pair-concentrated",
-  "astroport-incentives",
-  "astroport-liquidity-manager",
-]
-osmosis-test-tube = ["dep:osmosis-test-tube"]
+default              = []
+astroport            = ["cw20", "dep:astroport"]
+osmosis              = ["proptest", "apollo-utils", "osmosis-test-tube"]
+coreum               = ["dep:coreum-wasm-sdk", "astroport/coreum", "astroport-pair/coreum", "astroport-pair-concentrated/coreum", "astroport-pair-stable/coreum", "astroport-factory/coreum", "astroport-incentives/coreum", "astroport-staking/coreum"]
+rpc-runner           = ["bip32"]
+chain-download       = []
+multi-test           = ["bech32", "sha2", "cw-multi-test", "paste", "regex"]
+astroport-multi-test = ["multi-test", "astroport", "astroport-token", "astroport-native-coin-registry", "astroport-factory", "astroport-maker", "astroport-pair-stable", "astroport-pair", "astroport-router", "astroport-staking", "astroport-vesting", "astroport-whitelist", "astroport-pair-concentrated", "astroport-incentives"]
+osmosis-test-tube    = ["dep:osmosis-test-tube"]
+coreum-test-tube     = ["coreum", "dep:coreum-test-tube"]
 
 [package.metadata.scripts]
 optimize = """docker run --rm -v "$(pwd)":/code \
@@ -69,60 +55,60 @@ all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [package.metadata.cargo-machete]
-ignored = ["astroport-token", "astroport-native-coin-registry", "astroport-factory", "astroport-maker", "astroport-pair-stable", "astroport-pair", "astroport-router", "astroport-staking", "astroport-vesting", "astroport-whitelist", "astroport-liquidity-manager"]
+ignored = ["astroport-token", "astroport-native-coin-registry", "astroport-factory", "astroport-maker", "astroport-pair-stable", "astroport-pair", "astroport-router", "astroport-staking", "astroport-vesting", "astroport-whitelist"]
 
 [dependencies]
-bip32 = { version = "0.5", features = ["bip39"], optional = true }
-cosmwasm-std = { version = "1.5.5", features = ["stargate"] }
-serde = { version = "1.0.152", default-features = false, features = ["derive"] }
-thiserror = { version = "1.0.31" }
-cosmwasm-schema = "1.2.1"
-cosmrs = { version = "0.15", features = ["rpc", "cosmwasm"] }
-prost = { version = "0.12", default-features = false, features = [
-  "prost-derive",
-] }
-config = { version = "0.14.0", features = ["yaml"] }
-anyhow = "1.0.66"
-strum = { version = "0.24.1", features = ["derive"] }
-osmosis-std = "0.25.0"
-test-tube = { version = "0.7.0", features = ["module-wrappers"] }
+anyhow            = "1.0.100"
+bip32             = { version = "0.5.3", features = ["bip39"], optional = true }
+config            = { version = "0.15.19", features = ["yaml"] }
+coreum-test-tube  = { version = "4.1.2", optional = true }
+coreum-wasm-sdk   = { version = "=1.0.0", optional = true }
+cosmrs            = { version = "0.15.0", features = ["rpc", "cosmwasm"] }
+cosmwasm-schema   = "1.5.11"
+cosmwasm-std      = { version = "1.5.11", features = ["stargate"] }
+cw-storage-plus   = "1.2.0"
+osmosis-std       = "0.25.0"
 osmosis-test-tube = { version = "25.0.0", optional = true }
+prost             = { version = "0.12", default-features = false, features = ["prost-derive"] }
+serde             = { version = "1.0.228", default-features = false, features = ["derive"] }
+strum             = { version = "0.27.2", features = ["derive"] }
+test-tube         = { version = "0.7.0", features = ["module-wrappers"] }
+thiserror         = { version = "2.0.17" }
+tokio             = { version = "1.48.0" }
 
 # Astroport deps
-astroport_v2 = { package = "astroport", version = "2.9.0", optional = true }
-astroport = { version = "5.2.0", optional = true }
-cw20 = { version = "0.15", optional = true }
+astroport = { git = "https://github.com/onxrp/astroport-core", optional = true }
+cw20      = { version = "1.1", optional = true }
 
 # Astroport contracts for multi-test
-astroport-token = { version = "=1.1.1", optional = true, features = ["library"] }
-astroport-native-coin-registry = { version = "=1.0.1", optional = true, features = ["library"] }
-astroport-factory = { version = "=1.8.0", optional = true, features = ["library"] }
-astroport-maker = { version = "=1.5.0", optional = true }
-astroport-pair-stable = { version = "=4.0.0", optional = true, features = ["library"] }
-astroport-pair = { version = "=2.0.1", optional = true }
-astroport-router = { version = "=1.2.1", optional = true }
-astroport-staking = { version = "=2.1.0", optional = true }
-astroport-vesting = { version = "=1.4.0", optional = true, features = ["library"] }
-astroport-whitelist = { version = "=2.0.0", optional = true, features = ["library"] }
-astroport-pair-concentrated = { version = "=4.0.2", optional = true, features = ["library"] }
-astroport-incentives = { version = "=1.1.0", optional = true, features = ["library"] }
-astroport-liquidity-manager = { version = "=1.0.4", optional = true, features = ["library"] }
+astroport-factory              = { git = "https://github.com/onxrp/astroport-core", optional = true, features = ["library"] }
+astroport-incentives           = { git = "https://github.com/onxrp/astroport-core", optional = true, features = ["library"] }
+astroport-maker                = { git = "https://github.com/onxrp/astroport-core", optional = true }
+astroport-native-coin-registry = { git = "https://github.com/onxrp/astroport-core", optional = true, features = ["library"] }
+astroport-pair                 = { git = "https://github.com/onxrp/astroport-core", optional = true }
+astroport-pair-concentrated    = { git = "https://github.com/onxrp/astroport-core", optional = true, features = ["library"] }
+astroport-pair-stable          = { git = "https://github.com/onxrp/astroport-core", optional = true, features = ["library"] }
+astroport-router               = { git = "https://github.com/onxrp/astroport-core", optional = true }
+astroport-staking              = { git = "https://github.com/onxrp/astroport-core", optional = true }
+astroport-token                = { version = "=1.1.1", optional = true, features = ["library"] }
+astroport-vesting              = { git = "https://github.com/onxrp/astroport-core", optional = true, features = ["library"] }
+astroport-whitelist            = { git = "https://github.com/onxrp/astroport-core", optional = true, features = ["library"] }
 
 # Osmosis deps
-proptest     = { version = "1.0.0", optional = true }
 apollo-utils = { version = "0.1.1", optional = true }
-regex        = { version = "1.7.3", optional = true }
+proptest     = { version = "1.9.0", optional = true }
+regex        = { version = "1.12.2", optional = true }
 
 # Cw-multi-test deps
-apollo-cw-multi-test = { version = "0.19.0", features = ["stargate"], optional = true }
-bech32 = { version = "0.11.0", optional = true }
-sha2 = { version = "0.10.8", optional = true }
+bech32        = { version = "0.11.0", optional = true }
+cw-multi-test = { version = "1.2.0", optional = true, features = ["cosmwasm_1_3"] }
 paste         = { version = "1.0.12", optional = true }
+sha2          = { version = "0.10.9", optional = true }
 
 # RPC Runner and chain-download deps
-tokio = { version = "1.27.0", optional = true }
+constcat = "0.6.1"
 
 [dev-dependencies]
-test-case      = "3.0.0"
-cw20-base      = { version = "0.15", features = ["library"] }
-cw20           = "0.15"
+cw20      = "1.1"
+cw20-base = { version = "1.1", features = ["library"] }
+test-case = "3.0.0"

@@ -6,7 +6,7 @@ use std::{
 use thiserror::Error;
 
 #[cfg(feature = "multi-test")]
-use {apollo_cw_multi_test::Contract, cosmwasm_std::Empty};
+use {cw_multi_test::Contract, cosmwasm_std::Empty};
 
 #[cfg(feature = "chain-download")]
 use self::on_chain::{download_wasm_from_code_id, download_wasm_from_contract_address};
@@ -93,12 +93,19 @@ pub enum ArtifactError {
     Generic(String),
 
     #[cfg(feature = "chain-download")]
-    #[error("{0}")]
-    DecodeError(#[from] prost::DecodeError),
+    #[error("Decode error: {0}")]
+    DecodeError(String),
 
     #[cfg(feature = "chain-download")]
     #[error("{0}")]
     RpcError(#[from] cosmrs::rpc::error::Error),
+}
+
+#[cfg(feature = "chain-download")]
+impl From<prost::DecodeError> for ArtifactError {
+    fn from(err: prost::DecodeError) -> Self {
+        ArtifactError::DecodeError(err.to_string())
+    }
 }
 
 impl Artifact {
@@ -135,7 +142,7 @@ mod tests {
 
     #[cfg(feature = "multi-test")]
     mod multi_test {
-        use apollo_cw_multi_test::ContractWrapper;
+        use cw_multi_test::ContractWrapper;
         use cosmwasm_std::{Binary, Deps, DepsMut, Env, MessageInfo, Response, StdResult};
 
         use super::*;

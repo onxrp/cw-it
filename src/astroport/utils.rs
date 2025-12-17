@@ -1,36 +1,31 @@
 use crate::artifact::Artifact;
 use crate::helpers::upload_wasm_files;
-use crate::traits::CwItRunner;
-use crate::{ContractMap, ContractType, TestRunner};
+use crate::traits::{CwItRunner, DEFAULT_COIN_DENOM};
+use crate::{ContractMap, ContractType, MultiTestStargateBound, TestRunner};
+use astroport::asset::AssetInfo as AssetInfoV2;
 use astroport::asset::{Asset, AssetInfo};
 use astroport::factory::{
-    ExecuteMsg as AstroportFactoryExecuteMsg, InstantiateMsg as AstroportFactoryInstantiateMsg,
-    PairConfig, PairType,
+    ExecuteMsg as AstroportFactoryExecuteMsg, InstantiateMsg as AstroportFactoryInstantiateMsg, PairConfig, PairType,
 };
 use astroport::incentives::InstantiateMsg as IncentivesInstantiateMsg;
-use astroport_v2::asset::AssetInfo as AssetInfoV2;
-use astroport_v2::liquidity_manager::InstantiateMsg as LiquidityManagerInstantiateMsg;
-use astroport_v2::maker::InstantiateMsg as MakerInstantiateMsg;
-use astroport_v2::native_coin_registry::InstantiateMsg as CoinRegistryInstantiateMsg;
-use astroport_v2::router::InstantiateMsg as RouterInstantiateMsg;
-use astroport_v2::token::InstantiateMsg as AstroTokenInstantiateMsg;
-use astroport_v2::vesting::{
-    ExecuteMsg as VestingExecuteMsg, InstantiateMsg as VestingInstantiateMsg, VestingAccount,
-    VestingSchedule, VestingSchedulePoint,
+// use astroport::liquidity_manager::InstantiateMsg as LiquidityManagerInstantiateMsg;
+use astroport::maker::InstantiateMsg as MakerInstantiateMsg;
+use astroport::native_coin_registry::InstantiateMsg as CoinRegistryInstantiateMsg;
+use astroport::router::InstantiateMsg as RouterInstantiateMsg;
+use astroport::token::InstantiateMsg as AstroTokenInstantiateMsg;
+use astroport::vesting::{
+    ExecuteMsg as VestingExecuteMsg, InstantiateMsg as VestingInstantiateMsg, VestingAccount, VestingSchedule, VestingSchedulePoint,
 };
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{coin, Addr, Binary, Coin, Event, Uint128, Uint64};
 use cw20::{BalanceResponse, Cw20Coin, Cw20ExecuteMsg, Cw20QueryMsg, MinterResponse};
 use osmosis_std::types::cosmos::bank::v1beta1::QueryBalanceRequest;
-use osmosis_std::types::cosmos::base::v1beta1::Coin as OsmosisCoin;
-use osmosis_std::types::osmosis::tokenfactory::v1beta1::{
-    MsgCreateDenom, MsgCreateDenomResponse, MsgMint, MsgMintResponse,
-};
 use std::collections::HashMap;
 use test_tube::ExecuteResponse;
 use test_tube::{Account, Bank, Module, Runner, SigningAccount, Wasm};
 
-pub const ASTROPORT_CONTRACT_NAMES: [&str; 12] = [
+#[cfg(not(feature = "coreum"))]
+pub const ASTROPORT_CONTRACT_NAMES: [&str; 11] = [
     "astroport_token",
     "astroport_native_coin_registry",
     "astroport_factory",
@@ -42,7 +37,23 @@ pub const ASTROPORT_CONTRACT_NAMES: [&str; 12] = [
     "astroport_pair_concentrated",
     "astroport_incentives",
     "astroport_tokenfactory_tracker",
-    "astroport_liquidity_manager",
+    // "astroport_liquidity_manager",
+];
+
+#[cfg(feature = "coreum")]
+pub const ASTROPORT_CONTRACT_NAMES: [&str; 11] = [
+    "astroport_token",
+    "astroport_native_coin_registry",
+    "astroport_factory-coreum",
+    "astroport_maker-coreum",
+    "astroport_pair_stable-coreum",
+    "astroport_pair-coreum",
+    "astroport_router-coreum",
+    "astroport_vesting-coreum",
+    "astroport_pair_concentrated-coreum",
+    "astroport_incentives-coreum",
+    "astroport_tokenfactory_tracker",
+    // "astroport_liquidity_manager",
 ];
 
 #[cw_serde]
@@ -68,29 +79,28 @@ pub struct AstroportContracts {
     pub router: Contract,
     pub vesting: Contract,
     pub incentives: Contract,
-    pub liquidity_manager: Contract,
+    // pub liquidity_manager: Contract,
     pub astro_native_denom: String,
 }
 
 impl AstroportContracts {
-    pub fn new_from_local_contracts(
-        runner: &TestRunner,
+    pub fn new_from_local_contracts<S>(
+        runner: &TestRunner<S>,
         path: &Option<&str>,
         append_arch: bool,
         arch: &Option<&str>,
         signer: &SigningAccount,
-    ) -> Self {
+    ) -> Self
+    where
+        S: MultiTestStargateBound,
+    {
         let contracts = get_local_contracts(runner, path, append_arch, arch);
 
         setup_astroport(runner, contracts, signer)
     }
 }
 
-pub fn setup_astroport<'a, R: CwItRunner<'a>>(
-    app: &'a R,
-    contracts: ContractMap,
-    admin: &SigningAccount,
-) -> AstroportContracts {
+pub fn setup_astroport<'a, R: CwItRunner<'a>>(app: &'a R, contracts: ContractMap, admin: &SigningAccount) -> AstroportContracts {
     // Upload contracts
     let code_ids = upload_wasm_files(app, admin, contracts).unwrap();
 
@@ -98,11 +108,7 @@ pub fn setup_astroport<'a, R: CwItRunner<'a>>(
     instantiate_astroport(app, admin, &code_ids)
 }
 
-pub fn instantiate_astroport<'a, R>(
-    app: &'a R,
-    admin: &SigningAccount,
-    code_ids: &HashMap<String, u64>,
-) -> AstroportContracts
+pub fn instantiate_astroport<'a, R>(app: &'a R, admin: &SigningAccount, code_ids: &HashMap<String, u64>) -> AstroportContracts
 where
     R: Runner<'a>,
 {
@@ -141,9 +147,7 @@ where
     let coin_registry = wasm
         .instantiate(
             code_ids["astroport_native_coin_registry"],
-            &CoinRegistryInstantiateMsg {
-                owner: admin.address(),
-            },
+            &CoinRegistryInstantiateMsg { owner: admin.address() },
             Some(&admin.address()),
             Some("Coin Registry"),
             &[],
@@ -168,6 +172,7 @@ where
                         total_fee_bps: 30,
                         pair_type: PairType::Xyk {},
                         permissioned: false,
+                        whitelist: None,
                     },
                     PairConfig {
                         code_id: code_ids["astroport_pair_stable"],
@@ -177,6 +182,7 @@ where
                         total_fee_bps: 5,
                         pair_type: PairType::Stable {},
                         permissioned: false,
+                        whitelist: None,
                     },
                     PairConfig {
                         code_id: code_ids["astroport_pair_concentrated"],
@@ -186,6 +192,7 @@ where
                         total_fee_bps: 0,
                         pair_type: PairType::Custom("concentrated".to_string()),
                         permissioned: false,
+                        whitelist: None,
                     },
                 ],
                 token_code_id: code_ids["astroport_token"], // TODO: is this correct or do we need another contract?
@@ -205,41 +212,25 @@ where
         .data
         .address;
 
-    // Instantiate Liquidity Manager
-    println!("Instantiating liquidity manager ...");
-    let liquidity_manager = wasm
-        .instantiate(
-            code_ids["astroport_liquidity_manager"],
-            &LiquidityManagerInstantiateMsg {
-                astroport_factory: factory.clone(),
-            },
-            Some(&admin.address()),
-            Some("Liquidity Manager"),
-            &[],
-            admin,
-        )
-        .unwrap()
-        .data
-        .address;
+    // // Instantiate Liquidity Manager
+    // println!("Instantiating liquidity manager ...");
+    // let liquidity_manager = wasm
+    //     .instantiate(
+    //         code_ids["astroport_liquidity_manager"],
+    //         &LiquidityManagerInstantiateMsg {
+    //             astroport_factory: factory.clone(),
+    //         },
+    //         Some(&admin.address()),
+    //         Some("Liquidity Manager"),
+    //         &[],
+    //         admin,
+    //     )
+    //     .unwrap()
+    //     .data
+    //     .address;
 
     // Create astro native denom
-    let msg = MsgCreateDenom {
-        sender: admin.address(),
-        subdenom: "astro".to_string(),
-    };
-    let res: ExecuteResponse<MsgCreateDenomResponse> =
-        app.execute(msg, MsgCreateDenom::TYPE_URL, admin).unwrap();
-    let astro_native_denom = res.data.new_token_denom;
-    let msg = MsgMint {
-        sender: admin.address(),
-        amount: Some(OsmosisCoin {
-            denom: astro_native_denom.clone(),
-            amount: 1e18.to_string(),
-        }),
-        mint_to_address: admin.address(),
-    };
-    let _res: ExecuteResponse<MsgMintResponse> =
-        app.execute(msg, MsgMint::TYPE_URL, admin).unwrap();
+    let astro_native_denom = create_astro(app, admin);
 
     // Instantiate vesting
     println!("Instantiating vesting ...");
@@ -335,9 +326,10 @@ where
                 },
                 // TODO: Uncertain about this
                 default_bridge: Some(AssetInfoV2::NativeToken {
-                    denom: "uosmo".to_string(),
+                    denom: DEFAULT_COIN_DENOM.to_string(),
                 }),
                 second_receiver_params: None,
+                collect_cooldown: None,
             },
             Some(&admin.address()),  // contract admin used for migration
             Some("Astroport Maker"), // contract label
@@ -364,12 +356,7 @@ where
         }],
     };
     let _res = wasm
-        .execute(
-            &vesting,
-            &msg,
-            &[coin(vesting_amount.u128(), &astro_native_denom)],
-            admin,
-        )
+        .execute(&vesting, &msg, &[coin(vesting_amount.u128(), &astro_native_denom)], admin)
         .unwrap();
 
     AstroportContracts {
@@ -382,12 +369,70 @@ where
         pair_stable: Contract::new(String::from(""), code_ids["astroport_pair_stable"]),
         pair: Contract::new(String::from(""), code_ids["astroport_pair"]),
         incentives: Contract::new(incentives, code_ids["astroport_incentives"]),
-        liquidity_manager: Contract::new(
-            liquidity_manager,
-            code_ids["astroport_liquidity_manager"],
-        ),
+        // liquidity_manager: Contract::new(liquidity_manager, code_ids["astroport_liquidity_manager"]),
         astro_native_denom: astro_native_denom.clone(),
     }
+}
+
+#[cfg(not(feature = "coreum"))]
+fn create_astro<'a, R>(app: &'a R, admin: &SigningAccount) -> String
+where
+    R: Runner<'a>,
+{
+    use osmosis_std::types::cosmos::base::v1beta1::Coin as NativeCoin;
+    use osmosis_std::types::osmosis::tokenfactory::v1beta1::{MsgCreateDenom, MsgCreateDenomResponse, MsgMint, MsgMintResponse};
+
+    let msg = MsgCreateDenom {
+        sender: admin.address(),
+        subdenom: "astro".to_string(),
+    };
+    let res: ExecuteResponse<MsgCreateDenomResponse> = app.execute(msg, MsgCreateDenom::TYPE_URL, admin).unwrap();
+    let astro_native_denom = res.data.new_token_denom;
+    let msg = MsgMint {
+        sender: admin.address(),
+        amount: Some(NativeCoin {
+            denom: astro_native_denom.clone(),
+            amount: 1e18.to_string(),
+        }),
+        mint_to_address: admin.address(),
+    };
+    let _res: ExecuteResponse<MsgMintResponse> = app.execute(msg, MsgMint::TYPE_URL, admin).unwrap();
+
+    astro_native_denom
+}
+
+#[cfg(feature = "coreum")]
+fn create_astro<'a, R>(app: &'a R, admin: &SigningAccount) -> String
+where
+    R: Runner<'a>,
+{
+    use coreum_wasm_sdk::types::coreum::asset::ft::v1::EmptyResponse;
+    use coreum_wasm_sdk::types::coreum::asset::ft::v1::{Feature, MsgIssue, MsgMint};
+    use coreum_wasm_sdk::types::cosmos::base::v1beta1::Coin as NativeCoin;
+
+    let msg = MsgIssue {
+        issuer: admin.address(),
+        subunit: "astro".to_string(),
+        symbol: "ASTRO".to_string(),
+        precision: 6,
+        initial_amount: "0".to_string(),
+        features: vec![Feature::Minting as i32],
+        ..MsgIssue::default()
+    };
+    let _issue_res: ExecuteResponse<EmptyResponse> = app.execute(msg, MsgIssue::TYPE_URL, admin).unwrap();
+    let astro_native_denom = format!("{}-{}", "astro", admin.address().to_string());
+
+    let msg = MsgMint {
+        sender: admin.address().to_string(),
+        coin: Some(NativeCoin {
+            denom: astro_native_denom.clone(),
+            amount: 1e18.to_string(),
+        }),
+        recipient: admin.address(),
+    };
+    let _mint_res: ExecuteResponse<EmptyResponse> = app.execute(msg, MsgMint::TYPE_URL, admin).unwrap();
+
+    astro_native_denom
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -411,9 +456,7 @@ where
         asset_infos: asset_infos.to_vec(),
         init_params,
     };
-    let res = wasm
-        .execute(factory_addr, &msg, denom_creation_fee, signer)
-        .unwrap();
+    let res = wasm.execute(factory_addr, &msg, denom_creation_fee, signer).unwrap();
 
     // Get pair and lp_token addresses from event
     let (pair_addr, lp_token) = parse_astroport_create_pair_events(&res.events);
@@ -452,20 +495,12 @@ pub fn parse_astroport_create_pair_events(events: &[Event]) -> (String, String) 
         }
     }
 
-    let lp_token = if lp_token_denom.is_empty() {
-        lp_token_addr
-    } else {
-        lp_token_denom
-    };
+    let lp_token = if lp_token_denom.is_empty() { lp_token_addr } else { lp_token_denom };
 
     (pair_addr, lp_token)
 }
 
-pub fn get_lp_token_balance<'a, R>(
-    runner: &'a R,
-    pair_addr: &str,
-    address: &SigningAccount,
-) -> Uint128
+pub fn get_lp_token_balance<'a, R>(runner: &'a R, pair_addr: &str, address: &SigningAccount) -> Uint128
 where
     R: Runner<'a>,
 {
@@ -497,24 +532,20 @@ where
         .unwrap()
     };
 
-    balance
+    Uint128::from(balance.u128())
 }
 
 /// Converts a Coin to an Astroport Asset
 pub fn coin_to_astro_asset(coin: &Coin) -> Asset {
     Asset {
-        info: AssetInfo::NativeToken {
-            denom: coin.denom.clone(),
-        },
-        amount: coin.amount,
+        info: AssetInfo::NativeToken { denom: coin.denom.clone() },
+        amount: Uint128::from(coin.amount.u128()),
     }
 }
 
 /// Helper to get a native token Astroport AssetInfo.
 pub fn native_info(denom: &str) -> AssetInfo {
-    AssetInfo::NativeToken {
-        denom: denom.to_string(),
-    }
+    AssetInfo::NativeToken { denom: denom.to_string() }
 }
 
 /// Helper to get a cw20 token Astroport AssetInfo
@@ -528,7 +559,7 @@ pub fn cw20_info(contract_addr: &str) -> AssetInfo {
 pub fn native_asset(denom: &str, amount: impl Into<Uint128>) -> Asset {
     Asset {
         info: native_info(denom),
-        amount: amount.into(),
+        amount: Uint128::from(amount.into().u128()),
     }
 }
 
@@ -536,16 +567,11 @@ pub fn native_asset(denom: &str, amount: impl Into<Uint128>) -> Asset {
 pub fn cw20_asset(contract_addr: &str, amount: impl Into<Uint128>) -> Asset {
     Asset {
         info: cw20_info(contract_addr),
-        amount: amount.into(),
+        amount: Uint128::from(amount.into().u128()),
     }
 }
 
-pub fn provide_liquidity<'a, R>(
-    app: &'a R,
-    pair_addr: &str,
-    assets: Vec<Asset>,
-    signer: &SigningAccount,
-) -> Uint128
+pub fn provide_liquidity<'a, R>(app: &'a R, pair_addr: &str, assets: Vec<Asset>, signer: &SigningAccount) -> Uint128
 where
     R: Runner<'a>,
 {
@@ -564,20 +590,18 @@ where
                     amount: asset.amount,
                     expires: None,
                 };
-                wasm.execute(contract_addr.as_ref(), &msg, &[], signer)
-                    .unwrap();
+                wasm.execute(contract_addr.as_ref(), &msg, &[], signer).unwrap();
             }
             AssetInfo::NativeToken { denom } => {
                 funds.push(Coin {
                     denom: denom.to_string(),
-                    amount: asset.amount,
+                    amount: Uint128::from(asset.amount.u128()),
                 });
             }
         }
     }
 
     funds.sort_by(|a, b| a.denom.cmp(&b.denom));
-    println!("funds: {:?}", funds);
 
     // Provide liquidity
     let msg = astroport::pair::ExecuteMsg::ProvideLiquidity {
@@ -602,12 +626,7 @@ where
 /// * `name` - The name of the contract
 /// * `path` - The path to the artifacts folder
 /// * `append_arch` - If true, the architecture will be appended to the filename
-pub fn get_wasm_path(
-    name: &str,
-    path: &Option<&str>,
-    append_arch: bool,
-    arch: &Option<&str>,
-) -> String {
+pub fn get_wasm_path(name: &str, path: &Option<&str>, append_arch: bool, arch: &Option<&str>) -> String {
     // If using cw-optimizoor, it prepends the cpu architecture to the wasm file name
     let name = if append_arch {
         let arch = arch.unwrap_or(std::env::consts::ARCH);
@@ -620,29 +639,18 @@ pub fn get_wasm_path(
 }
 
 /// Get astroport artifacts already from disk
-pub fn get_local_artifacts(
-    path: &Option<&str>,
-    append_arch: bool,
-    arch: &Option<&str>,
-) -> HashMap<String, Artifact> {
+pub fn get_local_artifacts(path: &Option<&str>, append_arch: bool, arch: &Option<&str>) -> HashMap<String, Artifact> {
     ASTROPORT_CONTRACT_NAMES
         .into_iter()
-        .map(|name| {
-            (
-                name.to_string(),
-                Artifact::Local(get_wasm_path(name, path, append_arch, arch)),
-            )
-        })
+        .map(|name| (name.to_string(), Artifact::Local(get_wasm_path(name, path, append_arch, arch))))
         .collect::<HashMap<String, Artifact>>()
 }
 
 /// Get astroport contracts as artifacts from disk or as imports for multi-test-runner
-pub fn get_local_contracts(
-    test_runner: &TestRunner,
-    path: &Option<&str>,
-    append_arch: bool,
-    arch: &Option<&str>,
-) -> ContractMap {
+pub fn get_local_contracts<S>(test_runner: &TestRunner<S>, path: &Option<&str>, append_arch: bool, arch: &Option<&str>) -> ContractMap
+where
+    S: MultiTestStargateBound,
+{
     match test_runner {
         #[cfg(feature = "astroport-multi-test")]
         TestRunner::MultiTest(_) => crate::astroport::utils::get_astroport_multitest_contracts(),
@@ -655,8 +663,8 @@ pub fn get_local_contracts(
 
 #[cfg(feature = "astroport-multi-test")]
 pub fn get_astroport_multitest_contracts() -> HashMap<String, ContractType> {
-    use apollo_cw_multi_test::ContractWrapper;
     use cosmwasm_std::Empty;
+    use cw_multi_test::ContractWrapper;
 
     use crate::create_contract_wrappers;
     use crate::create_contract_wrappers_with_reply;
@@ -677,17 +685,17 @@ pub fn get_astroport_multitest_contracts() -> HashMap<String, ContractType> {
 
     // Liquidity manager, incentives, and concentrated pair don't have query entrypoint in contract module
     contract_wrappers.extend(vec![
-        (
-            "astroport_liquidity_manager".to_string(),
-            Box::new(
-                ContractWrapper::new_with_empty(
-                    astroport_liquidity_manager::contract::execute,
-                    astroport_liquidity_manager::contract::instantiate,
-                    astroport_liquidity_manager::query::query,
-                )
-                .with_reply(astroport_liquidity_manager::contract::reply),
-            ) as Box<dyn apollo_cw_multi_test::Contract<Empty>>,
-        ),
+        // (
+        //     "astroport_liquidity_manager".to_string(),
+        //     Box::new(
+        //         ContractWrapper::new_with_empty(
+        //             astroport_liquidity_manager::contract::execute,
+        //             astroport_liquidity_manager::contract::instantiate,
+        //             astroport_liquidity_manager::query::query,
+        //         )
+        //         .with_reply(astroport_liquidity_manager::contract::reply),
+        //     ) as Box<dyn cw_multi_test::Contract<Empty>>,
+        // ),
         (
             "astroport_pair_concentrated".to_string(),
             Box::new(
@@ -697,7 +705,7 @@ pub fn get_astroport_multitest_contracts() -> HashMap<String, ContractType> {
                     astroport_pair_concentrated::queries::query,
                 )
                 .with_reply(astroport_pair_concentrated::contract::reply),
-            ) as Box<dyn apollo_cw_multi_test::Contract<Empty>>,
+            ) as Box<dyn cw_multi_test::Contract<Empty>>,
         ),
         (
             "astroport_incentives".to_string(),
@@ -708,7 +716,7 @@ pub fn get_astroport_multitest_contracts() -> HashMap<String, ContractType> {
                     astroport_incentives::query::query,
                 )
                 .with_reply(astroport_incentives::reply::reply),
-            ) as Box<dyn apollo_cw_multi_test::Contract<Empty>>,
+            ) as Box<dyn cw_multi_test::Contract<Empty>>,
         ),
     ]);
 
@@ -727,6 +735,8 @@ mod tests {
     use osmosis_std::types::cosmos::bank::v1beta1::QueryBalanceRequest;
     use test_tube::{Account, Bank, Module, Wasm};
 
+    use crate::traits::{create_token_coins, DEFAULT_COIN_DENOM};
+    use crate::MultiTestStargateBound;
     use crate::{
         astroport::utils::{create_astroport_pair, setup_astroport},
         test_runner::TestRunner,
@@ -740,7 +750,8 @@ mod tests {
     #[cfg(any(
         feature = "rpc-runner",
         feature = "chain-download",
-        feature = "osmosis-test-tube"
+        feature = "osmosis-test-tube",
+        feature = "coreum-test-tube"
     ))]
     use crate::OwnedTestRunner;
 
@@ -748,23 +759,23 @@ mod tests {
     use crate::rpc_runner::{config::RpcRunnerConfig, RpcRunner};
 
     #[cfg(feature = "chain-download")]
-    use {
-        super::get_wasm_path, crate::artifact::ChainArtifact, crate::ContractType,
-        std::collections::HashMap,
-    };
+    use {super::get_wasm_path, crate::artifact::ChainArtifact, crate::ContractType, std::collections::HashMap};
 
     #[cfg(feature = "rpc-runner")]
     pub const TEST_CONFIG_PATH: &str = "configs/terra.yaml";
 
     /// Which test runner to use for the tests
+    #[cfg(not(feature = "coreum"))]
     pub const TEST_RUNNER: &str = "osmosis-test-app";
+    #[cfg(feature = "coreum")]
+    pub const TEST_RUNNER: &str = "coreum-test-app";
 
     /// cw-optimizoor adds the CPU architecture to the wasm file name
     pub const APPEND_ARCH: bool = false;
     pub const ARCH: Option<&str> = None;
 
     /// The path to the artifacts folder
-    pub const ARTIFACTS_PATH: Option<&str> = Some("artifacts/4d3be0e");
+    pub const ARTIFACTS_PATH: Option<&str> = Some("artifacts/coreum");
 
     #[cfg(feature = "chain-download")]
     /// The Neutron testnet RPC to use to download wasm files
@@ -779,50 +790,39 @@ mod tests {
         ("astroport_whitelist", ChainArtifact::CodeId(65)),
         (
             "astroport_native_coin_registry",
-            ChainArtifact::Addr(
-                "neutron1rfxpyypcseumuyxmln43d7lc9h0kjw87xc433x38s7w22ukmw8vqd3k35c",
-            ),
+            ChainArtifact::Addr("neutron1rfxpyypcseumuyxmln43d7lc9h0kjw87xc433x38s7w22ukmw8vqd3k35c"),
         ),
         (
             "astroport_factory",
-            ChainArtifact::Addr(
-                "neutron1fuaym3wkqvts8r9vafd77q00jxuplacchde552amyk05gjqtmy2s84lnvr",
-            ),
+            ChainArtifact::Addr("neutron1fuaym3wkqvts8r9vafd77q00jxuplacchde552amyk05gjqtmy2s84lnvr"),
         ),
         (
             "astroport_generator",
-            ChainArtifact::Addr(
-                "neutron1mum2jzk55uhl375cmpydla9lsen65fvmcz2sm6k92n9uc8mm8r5sev5pen",
-            ),
+            ChainArtifact::Addr("neutron1mum2jzk55uhl375cmpydla9lsen65fvmcz2sm6k92n9uc8mm8r5sev5pen"),
         ),
         (
             "astroport_maker",
-            ChainArtifact::Addr(
-                "neutron1t9u4yesvzlprm37zlaujppfl9u3fpkv5jze77rh8tj38rww3dneqvruq8j",
-            ),
+            ChainArtifact::Addr("neutron1t9u4yesvzlprm37zlaujppfl9u3fpkv5jze77rh8tj38rww3dneqvruq8j"),
         ),
         (
             "astroport_router",
-            ChainArtifact::Addr(
-                "neutron13umcxfjs2jufxsjrheggf6zy9tx7jclm9uemkkre64unrwuzzs9sc355f3",
-            ),
+            ChainArtifact::Addr("neutron13umcxfjs2jufxsjrheggf6zy9tx7jclm9uemkkre64unrwuzzs9sc355f3"),
         ),
         (
             "astroport_vesting",
-            ChainArtifact::Addr(
-                "neutron1u430x73aack5zz0gx99zmu83yfjfe9wjf0vfguz8q9fdl04cspjs6ftcta",
-            ),
+            ChainArtifact::Addr("neutron1u430x73aack5zz0gx99zmu83yfjfe9wjf0vfguz8q9fdl04cspjs6ftcta"),
         ),
         (
             "astroport_satellite",
-            ChainArtifact::Addr(
-                "neutron1zuskfye2n07q6ylnrhkrvuha5y886q4m2m44nam5ljsrzrl63q6q07q4r7",
-            ),
+            ChainArtifact::Addr("neutron1zuskfye2n07q6ylnrhkrvuha5y886q4m2m44nam5ljsrzrl63q6q07q4r7"),
         ),
     ];
 
     /// Get astroport artifacts already from disk
-    pub fn get_local_contracts(test_runner: &TestRunner) -> ContractMap {
+    pub fn get_local_contracts<S>(test_runner: &TestRunner<S>) -> ContractMap
+    where
+        S: MultiTestStargateBound,
+    {
         super::get_local_contracts(test_runner, &ARTIFACTS_PATH, APPEND_ARCH, &ARCH)
     }
 
@@ -845,10 +845,7 @@ mod tests {
     #[cfg(feature = "chain-download")]
     fn download_neutron_testnet_artifacts() {
         for (name, artifact) in NEUTRON_CONTRACT_ADDRESSES {
-            let wasm = artifact
-                .into_artifact(NEUTRON_RPC.to_string())
-                .get_wasm_byte_code()
-                .unwrap();
+            let wasm = artifact.into_artifact(NEUTRON_RPC.to_string()).get_wasm_byte_code().unwrap();
             // write wasm to disk
             let path = get_wasm_path(name, &Some("artifacts"), false, &None);
             std::fs::write(path, wasm).unwrap();
@@ -858,7 +855,7 @@ mod tests {
     /// Creates an RPC test runner and accounts. If `cli` is Some, it will attempt to run the tests
     /// against the configured docker container.
     #[cfg(feature = "rpc-runner")]
-    fn get_rpc_runner<'a>() -> OwnedTestRunner<'a> {
+    fn get_rpc_runner() -> OwnedTestRunner {
         let rpc_runner_config = RpcRunnerConfig::from_yaml(TEST_CONFIG_PATH);
 
         let runner = RpcRunner::new(rpc_runner_config).unwrap();
@@ -871,7 +868,7 @@ mod tests {
     pub fn test_with_rpc_runner() {
         let runner = get_rpc_runner();
         let contracts = get_local_contracts(&runner.as_ref());
-        test_instantiate_astroport(runner.as_ref(), contracts, &[]);
+        test_instantiate_astroport(runner.as_ref(), contracts, &create_token_coins());
     }
 
     #[cfg(feature = "chain-download")]
@@ -884,67 +881,61 @@ mod tests {
         test_instantiate_astroport(runner.as_ref(), contracts, &[]);
     }
 
-    fn get_fee_denom<'a>(runner: &'a TestRunner) -> &'a str {
+    fn get_fee_denom<'a, S>(runner: &'a TestRunner<S>) -> &'a str
+    where
+        S: MultiTestStargateBound,
+    {
         match runner {
             #[cfg(feature = "rpc-runner")]
             TestRunner::RpcRunner(rpc_runner) => rpc_runner.config.chain_config.denom(),
-            _ => "uosmo",
+            _ => DEFAULT_COIN_DENOM,
         }
     }
 
     /// Feature-gated because we use OsmosisTestApp, change the TEST_RUNNER const to use a different runner
-    #[cfg(feature = "osmosis-test-tube")]
+    #[cfg(any(feature = "osmosis-test-tube", feature = "coreum-test-tube"))]
     #[test]
     fn test_with_local_artifacts() {
         let runner = OwnedTestRunner::from_str(TEST_RUNNER).unwrap();
         let contracts = get_local_contracts(&runner.as_ref());
-        test_instantiate_astroport(runner.as_ref(), contracts, &[]);
+        test_instantiate_astroport(runner.as_ref(), contracts, &create_token_coins());
     }
 
     /// Feature-gated because we use MultiTestRunner, change the TEST_RUNNER const to use a different runner
     #[cfg(feature = "astroport-multi-test")]
     mod multi_test {
         use super::get_local_contracts;
-        use apollo_cw_multi_test::{StargateKeeper, StargateMessageHandler};
-        use cosmwasm_std::coin;
 
         use crate::{
             multi_test::{modules::TokenFactory, MultiTestRunner},
+            traits::{create_token_coins, CREATE_TOKEN_FEE, DEFAULT_ADDRESS_PREFIX, DEFAULT_COIN_DENOM},
             OwnedTestRunner,
         };
 
         use super::test_instantiate_astroport;
 
         const TOKEN_FACTORY: &TokenFactory =
-            &TokenFactory::new("factory", 32, 16, 59 + 16, "10000000uosmo");
+            &TokenFactory::new("factory", 32, 16, 59 + 16, constcat::concat!(CREATE_TOKEN_FEE, DEFAULT_COIN_DENOM));
 
         #[test]
         fn test_with_multi_test_runner() {
-            let mut stargate_keeper = StargateKeeper::new();
-            TOKEN_FACTORY.register_msgs(&mut stargate_keeper);
-            let runner = OwnedTestRunner::MultiTest(MultiTestRunner::new_with_stargate(
-                "osmo",
-                stargate_keeper,
-            ));
+            let token_factory = TOKEN_FACTORY.clone();
+            let runner = OwnedTestRunner::MultiTest(MultiTestRunner::new_with_stargate(DEFAULT_ADDRESS_PREFIX, token_factory));
             let contracts = get_local_contracts(&runner.as_ref());
-            test_instantiate_astroport(
-                runner.as_ref(),
-                contracts,
-                &[coin(10_000_000u128, "uosmo")],
-            );
+            test_instantiate_astroport(runner.as_ref(), contracts, &create_token_coins());
         }
     }
 
-    pub fn test_instantiate_astroport(
-        app: TestRunner,
-        contracts: ContractMap,
-        denom_creation_fee: &[Coin],
-    ) {
+    pub fn test_instantiate_astroport<S>(app: TestRunner<S>, contracts: ContractMap, denom_creation_fee: &[Coin])
+    where
+        S: MultiTestStargateBound,
+    {
         let accs = app.init_default_accounts().unwrap();
         let native_denom = get_fee_denom(&app);
         let wasm = Wasm::new(&app);
 
         let admin = &accs[0];
+        println!("Admin address: {}", admin.address());
 
         // Print balances of admin
         let bank = Bank::new(&app);
@@ -1026,8 +1017,6 @@ mod tests {
             })
             .unwrap();
 
-        assert!(
-            Uint128::from_str(&lp_token_balance.balance.unwrap().amount).unwrap() > Uint128::zero()
-        );
+        assert!(Uint128::from_str(&lp_token_balance.balance.unwrap().amount).unwrap() > Uint128::zero());
     }
 }

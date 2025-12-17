@@ -35,7 +35,6 @@ impl<'a, T: bech32::Checksum> Api for MockApiBech<'a, T> {
                 return Ok(s.byte_iter().collect::<Vec<u8>>().into());
             }
         }
-        println!("{:?}", input);
         Err(StdError::generic_err("Invalid input"))
     }
 

@@ -4,8 +4,7 @@ use std::{collections::HashMap, str::FromStr};
 
 use cosmwasm_std::{Coin, StdError, StdResult, Uint128};
 use osmosis_std::types::cosmos::bank::v1beta1::{
-    MsgSend, MsgSendResponse, QueryAllBalancesRequest, QueryAllBalancesResponse,
-    QueryBalanceRequest,
+    MsgSend, MsgSendResponse, QueryAllBalancesRequest, QueryAllBalancesResponse, QueryBalanceRequest,
 };
 use osmosis_std::types::cosmos::base::query::v1beta1::PageRequest;
 use osmosis_std::types::cosmos::base::v1beta1::Coin as ProtoCoin;
@@ -17,9 +16,12 @@ use crate::error::CwItError;
 use crate::traits::CwItRunner;
 use crate::{ArtifactError, ContractType};
 
-#[cfg(feature = "tokio")]
+#[cfg(not(feature = "coreum"))]
+const REPLACE_ARTIFACT_NAME: &str = "";
+#[cfg(feature = "coreum")]
+const REPLACE_ARTIFACT_NAME: &str = "-coreum";
+
 use std::future::Future;
-#[cfg(feature = "tokio")]
 pub fn block_on<F: Future>(f: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -37,7 +39,11 @@ pub fn upload_wasm_files<'a, R: CwItRunner<'a>>(
         .into_iter()
         .map(|(name, contract)| {
             let code_id = upload_wasm_file(runner, signer, contract)?;
-            Ok((name, code_id))
+            let mut final_name = name;
+            if REPLACE_ARTIFACT_NAME != "" {
+                final_name = final_name.replace(REPLACE_ARTIFACT_NAME, "");
+            }
+            Ok((final_name, code_id))
         })
         .collect()
 }
@@ -70,12 +76,7 @@ where
     .map(|r| r.data.address.into())
 }
 
-pub fn instantiate_contract<'a, R, M, S>(
-    app: &'a R,
-    admin: &SigningAccount,
-    code_id: u64,
-    instantite_msg: &M,
-) -> RunnerResult<S>
+pub fn instantiate_contract<'a, R, M, S>(app: &'a R, admin: &SigningAccount, code_id: u64, instantite_msg: &M) -> RunnerResult<S>
 where
     R: Runner<'a>,
     M: Serialize,
@@ -85,25 +86,14 @@ where
 }
 
 /// Uploads a wasm file to the chain and returns the code_id
-pub fn upload_wasm_file<'a, R: CwItRunner<'a>>(
-    runner: &'a R,
-    signer: &SigningAccount,
-    contract: ContractType,
-) -> Result<u64, CwItError> {
+pub fn upload_wasm_file<'a, R: CwItRunner<'a>>(runner: &'a R, signer: &SigningAccount, contract: ContractType) -> Result<u64, CwItError> {
     let error_msg = format!("Failed to upload wasm file: {:?}", contract);
-    runner.store_code(contract, signer).map_err(|e| {
-        CwItError::ArtifactError(ArtifactError::Generic(format!(
-            "{:?}. Error: {:?}",
-            error_msg, e
-        )))
-    })
+    runner
+        .store_code(contract, signer)
+        .map_err(|e| CwItError::ArtifactError(ArtifactError::Generic(format!("{:?}. Error: {:?}", error_msg, e))))
 }
 
-pub fn bank_balance_query<'a>(
-    runner: &'a impl Runner<'a>,
-    address: String,
-    denom: String,
-) -> StdResult<Uint128> {
+pub fn bank_balance_query<'a>(runner: &'a impl Runner<'a>, address: String, denom: String) -> StdResult<Uint128> {
     Bank::new(runner)
         .query_balance(&QueryBalanceRequest { address, denom })
         .unwrap()
@@ -118,10 +108,7 @@ pub fn bank_all_balances_query<'a>(
     pagination: Option<PageRequest>,
 ) -> StdResult<QueryAllBalancesResponse> {
     Bank::new(runner)
-        .query_all_balances(&QueryAllBalancesRequest {
-            address,
-            pagination,
-        })
+        .query_all_balances(&QueryAllBalancesRequest { address, pagination })
         .map_err(|_| StdError::generic_err("Bank all balances query failed"))
 }
 

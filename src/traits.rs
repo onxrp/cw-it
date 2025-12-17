@@ -1,6 +1,5 @@
 use anyhow::Error;
-use cosmwasm_std::coin;
-use cosmwasm_std::Coin;
+use cosmwasm_std::{coin, coins, Coin};
 use test_tube::Runner;
 use test_tube::SigningAccount;
 
@@ -9,10 +8,34 @@ use crate::artifact::ContractType;
 // Some very high number smaller than u128::MAX, to allow for receiving some coins without overflow.
 pub const DEFAULT_COIN_AMOUNT: u128 = 1_000_000_000_000_000_000_000_000u128;
 
+#[cfg(not(feature = "coreum"))]
+pub const DEFAULT_COIN_DENOM: &str = "uosmo";
+#[cfg(feature = "coreum")]
+pub const DEFAULT_COIN_DENOM: &str = "ucore";
+
+#[cfg(not(feature = "coreum"))]
+pub const DEFAULT_ADDRESS_PREFIX: &str = "osmo";
+#[cfg(feature = "coreum")]
+pub const DEFAULT_ADDRESS_PREFIX: &str = "core";
+
+#[cfg(not(feature = "coreum"))]
+pub const CREATE_TOKEN_FEE: &str = "10000000";
+#[cfg(feature = "coreum")]
+pub const CREATE_TOKEN_FEE: &str = "10000000";
+
+/// Returns the coins required for creating a token.
+pub fn create_token_coins() -> Vec<Coin> {
+    if CREATE_TOKEN_FEE != "0" {
+        coins(CREATE_TOKEN_FEE.parse().unwrap(), DEFAULT_COIN_DENOM)
+    } else {
+        vec![]
+    }
+}
+
 /// Returns a list of coins to initialize testing accounts.
 pub fn initial_coins() -> Vec<cosmwasm_std::Coin> {
     vec![
-        coin(DEFAULT_COIN_AMOUNT, "uosmo"),
+        coin(DEFAULT_COIN_AMOUNT, DEFAULT_COIN_DENOM),
         coin(DEFAULT_COIN_AMOUNT, "uion"),
         coin(DEFAULT_COIN_AMOUNT, "uatom"),
         coin(DEFAULT_COIN_AMOUNT, "stake"),

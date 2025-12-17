@@ -1,102 +1,142 @@
 use crate::multi_test::api::MockApiBech32;
+use crate::multi_test::modules::unified_stargate::UnifiedStargate;
+use crate::MultiTestStargateBound;
+use crate::test_runner::DefaultStargate;
 use crate::{traits::CwItRunner, ContractType};
 use anyhow::bail;
-use apollo_cw_multi_test::{
-    BankKeeper, BankSudo, BasicAppBuilder, MockAddressGenerator, WasmKeeper,
+use cosmrs::proto::cosmos::bank::v1beta1::{
+    QueryAllBalancesRequest, QueryAllBalancesResponse, QueryBalanceRequest, QueryBalanceResponse, QuerySupplyOfRequest,
+    QuerySupplyOfResponse,
 };
+use cosmrs::proto::cosmos::base::v1beta1::Coin as ProtoCoin;
+use cosmrs::proto::cosmwasm::wasm::v1::{
+    ContractInfo, QueryContractInfoRequest, QueryContractInfoResponse, QuerySmartContractStateRequest, QuerySmartContractStateResponse,
+};
+use cosmwasm_std::testing::{MockApi, MockStorage};
+use cw_multi_test::{
+    AcceptingModule, BankKeeper, BankSudo, BasicAppBuilder, DistributionKeeper, FailingModule, GovFailingModule, IbcFailingModule,
+    MockAddressGenerator, Router, StakeKeeper, Stargate, StargateFailingModule, WasmKeeper,
+};
+
 use cosmrs::{crypto::secp256k1::SigningKey, proto::cosmos::base::abci::v1beta1::GasInfo};
 use cosmwasm_std::{
-    coin, Addr, BankMsg, Binary, Coin, CosmosMsg, Empty, QueryRequest, StakingMsg, WasmMsg,
+    Addr, AllBalanceResponse, BalanceResponse, BankMsg, BankQuery, Binary, Coin, ContractInfoResponse, CosmosMsg, Empty, QueryRequest, StakingMsg, StdResult, SupplyResponse, WasmMsg, WasmQuery, coin, from_binary, from_json, to_json_binary
 };
 use osmosis_std::types::{
     cosmos::{
         bank::v1beta1::MsgSend,
         staking::v1beta1::{MsgBeginRedelegate, MsgDelegate, MsgUndelegate},
     },
-    cosmwasm::wasm::v1::{
-        MsgClearAdmin, MsgExecuteContract, MsgInstantiateContract, MsgMigrateContract,
-        MsgUpdateAdmin,
-    },
+    cosmwasm::wasm::v1::{MsgClearAdmin, MsgExecuteContract, MsgInstantiateContract, MsgMigrateContract, MsgUpdateAdmin},
 };
 use prost::Message;
+use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::ser::SerializeMap;
+use std::cell::RefCell;
 use std::str::FromStr;
-use test_tube::{
-    Account, DecodeError, EncodeError, FeeSetting, Runner, RunnerError, SigningAccount,
-};
+use test_tube::{Account, DecodeError, EncodeError, FeeSetting, Runner, RunnerError, SigningAccount};
 
-pub struct MultiTestRunner<'a> {
-    pub app: apollo_cw_multi_test::App<BankKeeper, MockApiBech32<'a>>,
-    pub address_prefix: &'a str,
+pub struct MultiTestRunner<StargateT = DefaultStargate>
+where
+    StargateT: MultiTestStargateBound,
+{
+    pub app: RefCell<
+        cw_multi_test::App<
+            BankKeeper,
+            MockApiBech32<'static>,
+            MockStorage,
+            FailingModule<Empty, Empty, Empty>,
+            WasmKeeper<Empty, Empty>,
+            StakeKeeper,
+            DistributionKeeper,
+            IbcFailingModule,
+            GovFailingModule,
+            UnifiedStargate<StargateT>,
+        >,
+    >,
+    pub address_prefix: String,
 }
 
-impl<'a> MultiTestRunner<'a> {
+impl MultiTestRunner<StargateFailingModule> {
     /// Creates a new instance of a `MultiTestRunner`, wrapping a `cw_multi_test::App`
     /// with the given address prefix.
-    pub fn new(address_prefix: &'a str) -> Self {
+    pub fn new(address_prefix: &str) -> Self {
+        let prefix_string = address_prefix.to_owned();
+        let leaked_prefix: &'static str = Box::leak(prefix_string.clone().into_boxed_str());
+
         // Construct app
-        let wasm_keeper: WasmKeeper<Empty, Empty> =
-            WasmKeeper::new_with_custom_address_generator(MockAddressGenerator);
+        let wasm_keeper: WasmKeeper<Empty, Empty> = WasmKeeper::new().with_address_generator(MockAddressGenerator);
+
+        let stargate = UnifiedStargate::new_without_extra();
 
         let app = BasicAppBuilder::<Empty, Empty>::new()
-            .with_api(MockApiBech32::new(address_prefix))
+            .with_api(MockApiBech32::new(leaked_prefix))
             .with_wasm(wasm_keeper)
+            .with_stargate(stargate)
             .build(|_, _, _| {});
 
         Self {
-            app,
-            address_prefix,
+            app: app.into(),
+            address_prefix: prefix_string,
         }
     }
+}
 
+impl<StargateT> MultiTestRunner<StargateT>
+where
+    StargateT: Stargate + 'static,
+{
     /// Creates a new instance of a `MultiTestRunner`, wrapping a `cw_multi_test::App`
     /// with the given address prefix and stargate keeper. This is needed for testing
     /// functionality that requires the Stargate messages or queries.
-    pub fn new_with_stargate(
-        address_prefix: &'a str,
-        stargate_keeper: apollo_cw_multi_test::StargateKeeper<Empty, Empty>,
-    ) -> Self {
-        let wasm_keeper: WasmKeeper<Empty, Empty> =
-            WasmKeeper::new_with_custom_address_generator(MockAddressGenerator);
+    pub fn new_with_stargate(address_prefix: &str, stargate_impl: StargateT) -> Self {
+        let prefix_string = address_prefix.to_owned();
+        let leaked_prefix: &'static str = Box::leak(prefix_string.clone().into_boxed_str());
+
+        let wasm_keeper: WasmKeeper<Empty, Empty> = WasmKeeper::new().with_address_generator(MockAddressGenerator);
+
+        let stargate = UnifiedStargate::new_with_extra(stargate_impl);
 
         // Construct app
         let app = BasicAppBuilder::<Empty, Empty>::new()
-            .with_api(MockApiBech32::new(address_prefix))
+            .with_api(MockApiBech32::new(leaked_prefix))
             .with_wasm(wasm_keeper)
-            .with_stargate(stargate_keeper)
+            .with_stargate(stargate)
             .build(|_, _, _| {});
 
         Self {
-            app,
-            address_prefix,
+            app: app.into(),
+            address_prefix: prefix_string,
         }
     }
 }
 
-impl Runner<'_> for MultiTestRunner<'_> {
+impl<StargateT> Runner<'_> for MultiTestRunner<StargateT>
+where
+    StargateT: Stargate + 'static,
+{
     fn execute_cosmos_msgs<S>(
         &self,
         msgs: &[cosmwasm_std::CosmosMsg],
         signer: &test_tube::SigningAccount,
     ) -> test_tube::RunnerExecuteResult<S>
     where
-        S: prost::Message + Default,
+        S: test_tube::cosmrs::proto::traits::Message + Default,
     {
         let sender = Addr::unchecked(signer.address());
 
         // Execute messages with multi test app
         let app_responses = self
             .app
+            .borrow_mut()
             .execute_multi(sender, msgs.to_vec())
             // NB: Must use this syntax to capture full anyhow message.
             // to_string() will only give the outermost error context.
             .map_err(|e| RunnerError::GenericError(format!("{:#}", e)))?;
 
         // Construct test_tube::ExecuteResponse from cw_multi_test::AppResponse
-        let events = app_responses
-            .iter()
-            .flat_map(|r| r.events.clone())
-            .collect();
+        let events = app_responses.iter().flat_map(|r| r.events.clone()).collect();
         let tmp = app_responses
             .iter()
             .map(|r| r.data.clone())
@@ -121,14 +161,10 @@ impl Runner<'_> for MultiTestRunner<'_> {
         Ok(runner_res)
     }
 
-    fn execute_multiple<M, R>(
-        &self,
-        msgs: &[(M, &str)],
-        signer: &test_tube::SigningAccount,
-    ) -> test_tube::RunnerExecuteResult<R>
+    fn execute_multiple<M, R>(&self, msgs: &[(M, &str)], signer: &test_tube::SigningAccount) -> test_tube::RunnerExecuteResult<R>
     where
-        M: prost::Message,
-        R: prost::Message + Default,
+        M: test_tube::cosmrs::proto::traits::Message,
+        R: test_tube::cosmrs::proto::traits::Message + Default,
     {
         let encoded_msgs = msgs
             .iter()
@@ -148,19 +184,18 @@ impl Runner<'_> for MultiTestRunner<'_> {
 
     fn execute_multiple_raw<R>(
         &self,
-        msgs: Vec<cosmrs::Any>,
+        msgs: Vec<test_tube::cosmrs::Any>,
         signer: &test_tube::SigningAccount,
     ) -> test_tube::RunnerExecuteResult<R>
     where
-        R: prost::Message + Default,
+        R: test_tube::cosmrs::proto::traits::Message + Default,
     {
         let msgs = msgs
             .iter()
             .map(|msg| match msg.type_url.as_str() {
                 // WasmMsg
                 MsgExecuteContract::TYPE_URL => {
-                    let msg = MsgExecuteContract::decode(msg.value.as_slice())
-                        .map_err(DecodeError::ProtoDecodeError)?;
+                    let msg = MsgExecuteContract::decode(msg.value.as_slice()).map_err(DecodeError::ProtoDecodeError)?;
                     Ok(CosmosMsg::<Empty>::Wasm(WasmMsg::Execute {
                         contract_addr: msg.contract,
                         msg: Binary(msg.msg),
@@ -172,8 +207,7 @@ impl Runner<'_> for MultiTestRunner<'_> {
                     }))
                 }
                 MsgInstantiateContract::TYPE_URL => {
-                    let msg = MsgInstantiateContract::decode(msg.value.as_slice())
-                        .map_err(DecodeError::ProtoDecodeError)?;
+                    let msg = MsgInstantiateContract::decode(msg.value.as_slice()).map_err(DecodeError::ProtoDecodeError)?;
                     Ok(CosmosMsg::<Empty>::Wasm(WasmMsg::Instantiate {
                         code_id: msg.code_id,
                         admin: Some(msg.admin),
@@ -187,8 +221,7 @@ impl Runner<'_> for MultiTestRunner<'_> {
                     }))
                 }
                 MsgMigrateContract::TYPE_URL => {
-                    let msg = MsgMigrateContract::decode(msg.value.as_slice())
-                        .map_err(DecodeError::ProtoDecodeError)?;
+                    let msg = MsgMigrateContract::decode(msg.value.as_slice()).map_err(DecodeError::ProtoDecodeError)?;
                     Ok(CosmosMsg::<Empty>::Wasm(WasmMsg::Migrate {
                         contract_addr: msg.contract,
                         new_code_id: msg.code_id,
@@ -196,24 +229,21 @@ impl Runner<'_> for MultiTestRunner<'_> {
                     }))
                 }
                 MsgUpdateAdmin::TYPE_URL => {
-                    let msg = MsgUpdateAdmin::decode(msg.value.as_slice())
-                        .map_err(DecodeError::ProtoDecodeError)?;
+                    let msg = MsgUpdateAdmin::decode(msg.value.as_slice()).map_err(DecodeError::ProtoDecodeError)?;
                     Ok(CosmosMsg::<Empty>::Wasm(WasmMsg::UpdateAdmin {
                         contract_addr: msg.contract,
                         admin: msg.new_admin,
                     }))
                 }
                 MsgClearAdmin::TYPE_URL => {
-                    let msg = MsgClearAdmin::decode(msg.value.as_slice())
-                        .map_err(DecodeError::ProtoDecodeError)?;
+                    let msg = MsgClearAdmin::decode(msg.value.as_slice()).map_err(DecodeError::ProtoDecodeError)?;
                     Ok(CosmosMsg::<Empty>::Wasm(WasmMsg::ClearAdmin {
                         contract_addr: msg.contract,
                     }))
                 }
                 // BankMsg
                 MsgSend::TYPE_URL => {
-                    let msg = MsgSend::decode(msg.value.as_slice())
-                        .map_err(DecodeError::ProtoDecodeError)?;
+                    let msg = MsgSend::decode(msg.value.as_slice()).map_err(DecodeError::ProtoDecodeError)?;
                     Ok(CosmosMsg::<Empty>::Bank(BankMsg::Send {
                         to_address: msg.to_address,
                         amount: msg
@@ -225,40 +255,28 @@ impl Runner<'_> for MultiTestRunner<'_> {
                 }
                 // StakingMsg
                 MsgDelegate::TYPE_URL => {
-                    let msg = MsgDelegate::decode(msg.value.as_slice())
-                        .map_err(DecodeError::ProtoDecodeError)?;
+                    let msg = MsgDelegate::decode(msg.value.as_slice()).map_err(DecodeError::ProtoDecodeError)?;
                     let proto_coin = msg.amount.unwrap_or_default();
                     Ok(CosmosMsg::<Empty>::Staking(StakingMsg::Delegate {
                         validator: msg.validator_address,
-                        amount: coin(
-                            u128::from_str(&proto_coin.amount).unwrap(),
-                            proto_coin.denom,
-                        ),
+                        amount: coin(u128::from_str(&proto_coin.amount).unwrap(), proto_coin.denom),
                     }))
                 }
                 MsgUndelegate::TYPE_URL => {
-                    let msg = MsgUndelegate::decode(msg.value.as_slice())
-                        .map_err(DecodeError::ProtoDecodeError)?;
+                    let msg = MsgUndelegate::decode(msg.value.as_slice()).map_err(DecodeError::ProtoDecodeError)?;
                     let proto_coin = msg.amount.unwrap_or_default();
                     Ok(CosmosMsg::<Empty>::Staking(StakingMsg::Undelegate {
                         validator: msg.validator_address,
-                        amount: coin(
-                            u128::from_str(&proto_coin.amount).unwrap(),
-                            proto_coin.denom,
-                        ),
+                        amount: coin(u128::from_str(&proto_coin.amount).unwrap(), proto_coin.denom),
                     }))
                 }
                 MsgBeginRedelegate::TYPE_URL => {
-                    let msg = MsgBeginRedelegate::decode(msg.value.as_slice())
-                        .map_err(DecodeError::ProtoDecodeError)?;
+                    let msg = MsgBeginRedelegate::decode(msg.value.as_slice()).map_err(DecodeError::ProtoDecodeError)?;
                     let proto_coin = msg.amount.unwrap_or_default();
                     Ok(CosmosMsg::<Empty>::Staking(StakingMsg::Redelegate {
                         src_validator: msg.validator_src_address,
                         dst_validator: msg.validator_dst_address,
-                        amount: coin(
-                            u128::from_str(&proto_coin.amount).unwrap(),
-                            proto_coin.denom,
-                        ),
+                        amount: coin(u128::from_str(&proto_coin.amount).unwrap(), proto_coin.denom),
                     }))
                 }
                 _ => {
@@ -276,12 +294,12 @@ impl Runner<'_> for MultiTestRunner<'_> {
 
     fn query<Q, R>(&self, path: &str, query: &Q) -> test_tube::RunnerResult<R>
     where
-        Q: prost::Message,
-        R: prost::Message + DeserializeOwned + Default,
+        Q: test_tube::cosmrs::proto::traits::Message,
+        R: test_tube::cosmrs::proto::traits::Message + DeserializeOwned + Default,
     {
-        let querier = self.app.wrap();
-
-        querier
+        self.app
+            .borrow()
+            .wrap()
             .query::<R>(&QueryRequest::Stargate {
                 path: path.to_string(),
                 data: query.encode_to_vec().into(),
@@ -292,19 +310,18 @@ impl Runner<'_> for MultiTestRunner<'_> {
     fn execute_tx(
         &self,
         _tx_bytes: &[u8],
-    ) -> test_tube::RunnerResult<cosmrs::proto::tendermint::v0_37::abci::ResponseDeliverTx> {
+    ) -> test_tube::RunnerResult<test_tube::cosmrs::proto::tendermint::v0_37::abci::ResponseDeliverTx> {
         todo!()
     }
 }
 
-impl<'a> CwItRunner<'a> for MultiTestRunner<'a> {
-    fn store_code(
-        &self,
-        code: ContractType,
-        _signer: &SigningAccount,
-    ) -> Result<u64, anyhow::Error> {
+impl<'a, StargateT> CwItRunner<'a> for MultiTestRunner<StargateT>
+where
+    StargateT: MultiTestStargateBound,
+{
+    fn store_code(&self, code: ContractType, _signer: &SigningAccount) -> Result<u64, anyhow::Error> {
         match code {
-            ContractType::MultiTestContract(contract) => Ok(self.app.store_code(contract)),
+            ContractType::MultiTestContract(contract) => Ok(self.app.borrow_mut().store_code(contract)),
             ContractType::Artifact(_) => bail!("Artifact not supported for MultiTestRunner"),
         }
     }
@@ -324,6 +341,7 @@ impl<'a> CwItRunner<'a> for MultiTestRunner<'a> {
         // Mint the initial balances to the account
         if !initial_balance.is_empty() {
             self.app
+                .borrow_mut()
                 .sudo(
                     BankSudo::Mint {
                         to_address: account.address(),
@@ -337,11 +355,7 @@ impl<'a> CwItRunner<'a> for MultiTestRunner<'a> {
         Ok(account)
     }
 
-    fn init_accounts(
-        &self,
-        initial_balance: &[Coin],
-        num_accounts: usize,
-    ) -> Result<Vec<SigningAccount>, anyhow::Error> {
+    fn init_accounts(&self, initial_balance: &[Coin], num_accounts: usize) -> Result<Vec<SigningAccount>, anyhow::Error> {
         let mut accounts = vec![];
         for _ in 0..num_accounts {
             accounts.push(self.init_account(initial_balance)?);
@@ -350,7 +364,7 @@ impl<'a> CwItRunner<'a> for MultiTestRunner<'a> {
     }
 
     fn increase_time(&self, seconds: u64) -> Result<(), anyhow::Error> {
-        self.app.update_block(|block| {
+        self.app.borrow_mut().update_block(|block| {
             block.time = block.time.plus_seconds(seconds);
             block.height += 1;
         });
@@ -359,7 +373,16 @@ impl<'a> CwItRunner<'a> for MultiTestRunner<'a> {
     }
 
     fn query_block_time_nanos(&self) -> u64 {
-        self.app.block_info().time.nanos()
+        self.app.borrow().block_info().time.nanos()
+    }
+}
+
+impl<StargateT> MultiTestRunner<StargateT>
+where
+    StargateT: MultiTestStargateBound,
+{
+    pub fn query_wasm_smart<T: DeserializeOwned>(&self, contract_addr: impl Into<String>, msg: &impl Serialize) -> StdResult<T> {
+        self.app.borrow().wrap().query_wasm_smart(contract_addr, msg)
     }
 }
 
@@ -369,26 +392,21 @@ mod tests {
     use cosmwasm_std::{coin, Event, Uint128};
 
     use crate::test_helpers::*;
+    use crate::traits::{DEFAULT_ADDRESS_PREFIX, DEFAULT_COIN_DENOM};
     use crate::{artifact::Artifact, helpers::upload_wasm_file};
-    use apollo_cw_multi_test::ContractWrapper;
+    use cw_multi_test::ContractWrapper;
 
     use cw20::MinterResponse;
     use osmosis_std::types::cosmos::bank::v1beta1::{
-        QueryBalanceRequest, QuerySupplyOfRequest, QueryTotalSupplyRequest,
+        QueryBalanceRequest, QuerySupplyOfRequest as OsmosisQuerySupplyOfRequest, QueryTotalSupplyRequest,
     };
     use osmosis_std::types::cosmwasm::wasm::v1::QueryContractInfoRequest;
-    use osmosis_std::types::{
-        cosmos::bank::v1beta1::QueryAllBalancesRequest,
-        cosmwasm::wasm::v1::MsgInstantiateContractResponse,
-    };
+    use osmosis_std::types::{cosmos::bank::v1beta1::QueryAllBalancesRequest, cosmwasm::wasm::v1::MsgInstantiateContractResponse};
     use test_tube::{Bank, Module, RunnerExecuteResult, Wasm};
 
     use super::*;
 
-    fn instantiate_astro_token(
-        app: &MultiTestRunner,
-        signer: &SigningAccount,
-    ) -> RunnerExecuteResult<MsgInstantiateContractResponse> {
+    fn instantiate_astro_token(app: &MultiTestRunner, signer: &SigningAccount) -> RunnerExecuteResult<MsgInstantiateContractResponse> {
         let code_id = upload_wasm_file(
             app,
             signer,
@@ -420,8 +438,8 @@ mod tests {
     fn upload_contract() {
         let contract = ContractType::MultiTestContract(test_contract::contract());
 
-        let app = MultiTestRunner::new("osmo");
-        let alice = app.init_account(&[coin(1000, "uosmo")]).unwrap();
+        let app = MultiTestRunner::new(DEFAULT_ADDRESS_PREFIX);
+        let alice = app.init_account(&[coin(1000, DEFAULT_COIN_DENOM)]).unwrap();
 
         let code_id = app.store_code(contract, &alice).unwrap();
 
@@ -433,8 +451,8 @@ mod tests {
     // This test should panic because we are trying to upload a wasm contract to a MultiTestRunner
     // which does not support wasm contracts.
     fn upload_wasm_artifact() {
-        let app = MultiTestRunner::new("osmo");
-        let alice = app.init_account(&[coin(1000, "uosmo")]).unwrap();
+        let app = MultiTestRunner::new(DEFAULT_ADDRESS_PREFIX);
+        let alice = app.init_account(&[coin(1000, DEFAULT_COIN_DENOM)]).unwrap();
 
         let _code_id = upload_wasm_file(
             &app,
@@ -448,8 +466,8 @@ mod tests {
     // This test should panic because we are trying to upload a wasm contract to a MultiTestRunner
     // which does not support wasm contracts.
     fn wasm_instantiate_contract() {
-        let app = MultiTestRunner::new("osmo");
-        let alice = app.init_account(&[coin(1000, "uosmo")]).unwrap();
+        let app = MultiTestRunner::new(DEFAULT_ADDRESS_PREFIX);
+        let alice = app.init_account(&[coin(1000, DEFAULT_COIN_DENOM)]).unwrap();
 
         // Instantiate with test_tube::Wasm
         let res = instantiate_astro_token(&app, &alice).unwrap();
@@ -460,9 +478,9 @@ mod tests {
     #[test]
     fn wasm_execute_contract() {
         // start the keeper
-        let app = MultiTestRunner::new("osmo");
+        let app = MultiTestRunner::new(DEFAULT_ADDRESS_PREFIX);
 
-        let alice = app.init_account(&[coin(1000, "uosmo")]).unwrap();
+        let alice = app.init_account(&[coin(1000, DEFAULT_COIN_DENOM)]).unwrap();
 
         let res = instantiate_astro_token(&app, &alice).unwrap();
 
@@ -486,7 +504,7 @@ mod tests {
         assert_eq!(
             wasm_event,
             &Event::new("wasm")
-                .add_attribute("_contract_addr", contract_addr)
+                .add_attribute("_contract_address", contract_addr)
                 .add_attribute("action", "mint")
                 .add_attribute("to", alice.address())
                 .add_attribute("amount", "100")
@@ -495,9 +513,9 @@ mod tests {
 
     #[test]
     fn wasm_smart_query_contract() {
-        let app = MultiTestRunner::new("osmo");
+        let app = MultiTestRunner::new(DEFAULT_ADDRESS_PREFIX);
 
-        let alice = app.init_account(&[coin(1000, "uosmo")]).unwrap();
+        let alice = app.init_account(&[coin(1000, DEFAULT_COIN_DENOM)]).unwrap();
 
         let res = instantiate_astro_token(&app, &alice).unwrap();
 
@@ -517,12 +535,7 @@ mod tests {
         .unwrap();
 
         let res = wasm
-            .query::<_, cw20::BalanceResponse>(
-                &contract_addr,
-                &cw20_base::msg::QueryMsg::Balance {
-                    address: alice.address(),
-                },
-            )
+            .query::<_, cw20::BalanceResponse>(&contract_addr, &cw20_base::msg::QueryMsg::Balance { address: alice.address() })
             .unwrap();
 
         assert_eq!(res.balance, Uint128::zero());
@@ -530,9 +543,9 @@ mod tests {
 
     #[test]
     fn wasm_contract_info_query() {
-        let app = MultiTestRunner::new("osmo");
+        let app = MultiTestRunner::new(DEFAULT_ADDRESS_PREFIX);
 
-        let alice = app.init_account(&[coin(1000, "uosmo")]).unwrap();
+        let alice = app.init_account(&[coin(1000, DEFAULT_COIN_DENOM)]).unwrap();
 
         let res = instantiate_astro_token(&app, &alice).unwrap();
         let contract_addr = res.data.address;
@@ -540,7 +553,7 @@ mod tests {
         let res = QueryContractInfoRequest {
             address: contract_addr.clone(),
         }
-        .query(&app.app.wrap())
+        .query(&app.app.borrow().wrap())
         .unwrap();
 
         assert_eq!(res.address, contract_addr);
@@ -552,7 +565,7 @@ mod tests {
 
     #[test]
     fn bank_send() {
-        let app = MultiTestRunner::new("osmo");
+        let app = MultiTestRunner::new(DEFAULT_ADDRESS_PREFIX);
         let alice = app.init_account(&[coin(1000, "uatom")]).unwrap();
         let bob = app.init_account(&[]).unwrap();
 
@@ -564,9 +577,7 @@ mod tests {
             }],
         })];
 
-        let res = app
-            .execute_cosmos_msgs::<MsgSendResponse>(&msgs, &alice)
-            .unwrap();
+        let res = app.execute_cosmos_msgs::<MsgSendResponse>(&msgs, &alice).unwrap();
 
         assert_eq!(res.events.len(), 1);
         assert_eq!(
@@ -600,7 +611,7 @@ mod tests {
 
     #[test]
     fn bank_queries() {
-        let app = MultiTestRunner::new("osmo");
+        let app = MultiTestRunner::new(DEFAULT_ADDRESS_PREFIX);
         let alice = app.init_account(&[coin(1000, "uatom")]).unwrap();
 
         let bank = Bank::new(&app);
@@ -629,15 +640,13 @@ mod tests {
         assert_eq!(res.amount, "1000");
 
         // Query total supply should fail since there is no cosmwasm bank query for it
-        let _res = bank
-            .query_total_supply(&QueryTotalSupplyRequest { pagination: None })
-            .unwrap_err();
+        let _res = bank.query_total_supply(&QueryTotalSupplyRequest { pagination: None }).unwrap_err();
 
         // Query supply of
-        let supply = QuerySupplyOfRequest {
+        let supply = OsmosisQuerySupplyOfRequest {
             denom: "uatom".to_string(),
         }
-        .query(&app.app.wrap())
+        .query(&app.app.borrow().wrap())
         .unwrap()
         .amount
         .unwrap();
@@ -647,7 +656,7 @@ mod tests {
 
     #[test]
     fn query_bank_through_test_tube_bank_module() {
-        let app = MultiTestRunner::new("osmo");
+        let app = MultiTestRunner::new(DEFAULT_ADDRESS_PREFIX);
         let alice = app.init_account(&[coin(1000, "uatom")]).unwrap();
 
         let bank = Bank::new(&app);
@@ -666,10 +675,10 @@ mod tests {
 
     #[test]
     fn test_increase_time() {
-        let app = MultiTestRunner::new("osmo");
+        let app = MultiTestRunner::new(DEFAULT_ADDRESS_PREFIX);
 
-        let time = app.app.block_info().time;
+        let time = app.app.borrow().block_info().time;
         app.increase_time(69).unwrap();
-        assert_eq!(app.app.block_info().time.seconds(), time.seconds() + 69);
+        assert_eq!(app.app.borrow().block_info().time.seconds(), time.seconds() + 69);
     }
 }

@@ -6,16 +6,11 @@ use cosmrs::crypto::secp256k1;
 use cosmrs::proto::cosmos::auth::v1beta1::BaseAccount;
 use cosmrs::proto::cosmos::auth::v1beta1::{QueryAccountRequest, QueryAccountResponse};
 use cosmrs::tendermint::Time;
-use cosmwasm_std::{
-    from_json, Coin, ContractResult, Empty, Querier, QuerierResult, QueryRequest, SystemResult,
-    WasmQuery,
-};
-use osmosis_std::types::cosmwasm::wasm::v1::{
-    QuerySmartContractStateRequest, QuerySmartContractStateResponse,
-};
+use cosmwasm_std::{from_json, Coin, ContractResult, Empty, Querier, QuerierResult, QueryRequest, SystemResult, WasmQuery};
+use osmosis_std::types::cosmwasm::wasm::v1::{QuerySmartContractStateRequest, QuerySmartContractStateResponse};
 use test_tube::{
-    account::FeeSetting, Account, DecodeError, EncodeError, Module, Runner, RunnerError,
-    RunnerExecuteResult, RunnerResult, SigningAccount, Wasm,
+    account::FeeSetting, Account, DecodeError, EncodeError, Module, Runner, RunnerError, RunnerExecuteResult, RunnerResult, SigningAccount,
+    Wasm,
 };
 
 use super::chain::Chain;
@@ -93,12 +88,7 @@ impl Querier for RpcRunner {
 }
 
 impl RpcRunner {
-    fn create_signed_tx<I>(
-        &self,
-        msgs: I,
-        signer: &SigningAccount,
-        fee: Fee,
-    ) -> RunnerResult<Vec<u8>>
+    fn create_signed_tx<I>(&self, msgs: I, signer: &SigningAccount, fee: Fee) -> RunnerResult<Vec<u8>>
     where
         I: IntoIterator<Item = cosmrs::Any>,
     {
@@ -109,8 +99,7 @@ impl RpcRunner {
         // println!("accountId -> {:?}", signer.account_id());
         // println!("account -> {:?}", account);
 
-        let signer_info =
-            SignerInfo::single_direct(Some(signer.signing_key().public_key()), account.sequence);
+        let signer_info = SignerInfo::single_direct(Some(signer.signing_key().public_key()), account.sequence);
         let auth_info = signer_info.auth_info(fee);
         let sign_doc = tx::SignDoc::new(
             &tx_body,
@@ -140,11 +129,7 @@ impl RpcRunner {
     }
 
     #[allow(deprecated)]
-    fn simulate_tx<I>(
-        &self,
-        _msgs: I,
-        _signer: &SigningAccount,
-    ) -> RunnerResult<cosmrs::proto::cosmos::base::abci::v1beta1::GasInfo>
+    fn simulate_tx<I>(&self, _msgs: I, _signer: &SigningAccount) -> RunnerResult<cosmrs::proto::cosmos::base::abci::v1beta1::GasInfo>
     where
         I: IntoIterator<Item = cosmrs::Any>,
     {
@@ -156,25 +141,19 @@ impl RpcRunner {
         I: IntoIterator<Item = cosmrs::Any>,
     {
         match &signer.fee_setting() {
-            FeeSetting::Auto {
-                gas_price,
-                gas_adjustment,
-            } => {
+            FeeSetting::Auto { gas_price, gas_adjustment } => {
                 let gas_info = self.simulate_tx(msgs, signer)?;
                 let gas_limit = ((gas_info.gas_used as f64) * gas_adjustment).ceil() as u64;
 
                 let amount = cosmrs::Coin {
                     denom: self.chain.chain_cfg().denom().parse()?,
-                    amount: (((gas_limit as f64) * (gas_price.amount.u128() as f64)).ceil() as u64)
-                        .into(),
+                    amount: (((gas_limit as f64) * (gas_price.amount.u128() as f64)).ceil() as u64).into(),
                 };
 
                 Ok(Fee::from_amount_and_gas(amount, gas_limit))
             }
             FeeSetting::Custom { .. } => {
-                panic!(
-                    "estimate fee is a private function and should never be called when fee_setting is Custom"
-                );
+                panic!("estimate fee is a private function and should never be called when fee_setting is Custom");
             }
         }
     }
@@ -195,34 +174,23 @@ impl RpcRunner {
                 msg: "account query failed".to_string(),
             })?;
 
-        let base_account =
-            BaseAccount::decode(res.value.as_slice()).map_err(DecodeError::ProtoDecodeError)?;
+        let base_account = BaseAccount::decode(res.value.as_slice()).map_err(DecodeError::ProtoDecodeError)?;
 
         Ok(base_account)
     }
 
     fn abci_query<T: Message>(&self, req: T, path: &str) -> RunnerResult<AbciQuery> {
         let mut buf = Vec::with_capacity(req.encoded_len());
-        req.encode(&mut buf)
-            .map_err(EncodeError::ProtoEncodeError)?;
-        Ok(block_on(self.chain.client().abci_query(
-            Some(path.to_string()),
-            buf,
-            None,
-            false,
-        ))?)
+        req.encode(&mut buf).map_err(EncodeError::ProtoEncodeError)?;
+        Ok(block_on(self.chain.client().abci_query(Some(path.to_string()), buf, None, false))?)
     }
 }
 
 impl Runner<'_> for RpcRunner {
-    fn execute_multiple<M, R>(
-        &self,
-        msgs: &[(M, &str)],
-        signer: &SigningAccount,
-    ) -> RunnerExecuteResult<R>
+    fn execute_multiple<M, R>(&self, msgs: &[(M, &str)], signer: &SigningAccount) -> RunnerExecuteResult<R>
     where
-        M: ::prost::Message,
-        R: ::prost::Message + Default,
+        M: test_tube::cosmrs::proto::prost::Message,
+        R: test_tube::cosmrs::proto::prost::Message + Default,
     {
         let encoded_msgs = msgs
             .iter()
@@ -240,13 +208,9 @@ impl Runner<'_> for RpcRunner {
         self.execute_multiple_raw(encoded_msgs, signer)
     }
 
-    fn execute_multiple_raw<R>(
-        &self,
-        msgs: Vec<cosmrs::Any>,
-        signer: &SigningAccount,
-    ) -> RunnerExecuteResult<R>
+    fn execute_multiple_raw<R>(&self, msgs: Vec<test_tube::cosmrs::Any>, signer: &SigningAccount) -> RunnerExecuteResult<R>
     where
-        R: prost::Message + Default,
+        R: test_tube::cosmrs::proto::prost::Message + Default,
     {
         let _fee = match &signer.fee_setting() {
             FeeSetting::Auto { .. } => self.estimate_fee(msgs.clone(), signer)?,
@@ -275,8 +239,7 @@ impl Runner<'_> for RpcRunner {
 
         let tx_raw = self.create_signed_tx(msgs, signer, fee)?;
 
-        let tx_commit_response: TxCommitResponse =
-            block_on(self.chain.client().broadcast_tx_commit(tx_raw))?;
+        let tx_commit_response: TxCommitResponse = block_on(self.chain.client().broadcast_tx_commit(tx_raw))?;
 
         if tx_commit_response.check_tx.code.is_err() {
             return Err(RunnerError::ExecuteError {
@@ -293,43 +256,32 @@ impl Runner<'_> for RpcRunner {
 
     fn query<Q, R>(&self, path: &str, msg: &Q) -> RunnerResult<R>
     where
-        Q: ::prost::Message,
-        R: ::prost::Message + Default,
+        Q: test_tube::cosmrs::proto::prost::Message,
+        R: test_tube::cosmrs::proto::prost::Message + Default,
     {
         let mut base64_query_msg_bytes = Vec::with_capacity(msg.encoded_len());
-        msg.encode(&mut base64_query_msg_bytes)
-            .map_err(EncodeError::ProtoEncodeError)?;
+        msg.encode(&mut base64_query_msg_bytes).map_err(EncodeError::ProtoEncodeError)?;
 
-        let res = block_on(self.chain.client().abci_query(
-            Some(path.to_string()),
-            base64_query_msg_bytes,
-            None,
-            false,
-        ))?;
+        let res = block_on(
+            self.chain
+                .client()
+                .abci_query(Some(path.to_string()), base64_query_msg_bytes, None, false),
+        )?;
 
         if res.code != cosmrs::tendermint::abci::Code::Ok {
-            return Err(RunnerError::QueryError {
-                msg: "error".to_string(),
-            });
+            return Err(RunnerError::QueryError { msg: "error".to_string() });
         }
 
         Ok(R::decode(res.value.as_slice()).map_err(DecodeError::ProtoDecodeError)?)
     }
 
-    fn execute_tx(
-        &self,
-        _tx_bytes: &[u8],
-    ) -> RunnerResult<cosmrs::proto::tendermint::v0_37::abci::ResponseDeliverTx> {
+    fn execute_tx(&self, _tx_bytes: &[u8]) -> RunnerResult<test_tube::cosmrs::proto::tendermint::v0_37::abci::ResponseDeliverTx> {
         todo!()
     }
 }
 
 impl<'a> CwItRunner<'a> for RpcRunner {
-    fn store_code(
-        &self,
-        code: ContractType,
-        signer: &SigningAccount,
-    ) -> Result<u64, anyhow::Error> {
+    fn store_code(&self, code: ContractType, signer: &SigningAccount) -> Result<u64, anyhow::Error> {
         match code {
             ContractType::Artifact(artifact) => {
                 let bytes = artifact.get_wasm_byte_code()?;
@@ -354,22 +306,13 @@ impl<'a> CwItRunner<'a> for RpcRunner {
         );
 
         // Fund account with initial_balance from funding_account
-        bank_send(
-            self,
-            &self.funding_account,
-            &new_account.address(),
-            initial_balance.to_vec(),
-        )
-        .map_err(|e| anyhow::anyhow!("Funding of new account failed. Error: {}", e))?;
+        bank_send(self, &self.funding_account, &new_account.address(), initial_balance.to_vec())
+            .map_err(|e| anyhow::anyhow!("Funding of new account failed. Error: {}", e))?;
 
         Ok(new_account)
     }
 
-    fn init_accounts(
-        &self,
-        initial_balance: &[Coin],
-        num_accounts: usize,
-    ) -> Result<Vec<SigningAccount>, anyhow::Error> {
+    fn init_accounts(&self, initial_balance: &[Coin], num_accounts: usize) -> Result<Vec<SigningAccount>, anyhow::Error> {
         let mut accounts = Vec::new();
         for _ in 0..num_accounts {
             accounts.push(self.init_account(initial_balance)?);
