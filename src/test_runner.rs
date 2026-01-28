@@ -426,6 +426,9 @@ where
         let query_data = to_json_binary(msg)?.to_vec();
 
         match self {
+            // PhantomData should never be used at runtime - it exists only to satisfy type requirements
+            Self::PhantomData(_) => unreachable!("PhantomData variant should never be instantiated"),
+
             // ----- cw-multi-test backend -----
             #[cfg(feature = "multi-test")]
             Self::MultiTest(runner) => runner.query_wasm_smart(contract_addr, msg),
