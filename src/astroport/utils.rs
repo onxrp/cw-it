@@ -673,14 +673,14 @@ pub fn get_astroport_multitest_contracts() -> HashMap<String, ContractType> {
         "astroport_native_coin_registry",
         "astroport_maker",
         "astroport_token",
-        "astroport_router",
         "astroport_vesting" // "astroport_whitelist"
     );
 
     contract_wrappers.extend(create_contract_wrappers_with_reply!(
         "astroport_factory",
         "astroport_pair_stable",
-        "astroport_pair"
+        "astroport_pair",
+        "astroport_router"
     ));
 
     // Liquidity manager, incentives, and concentrated pair don't have query entrypoint in contract module

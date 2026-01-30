@@ -721,13 +721,27 @@ impl<'a> Module for TokenFactory<'a> {
                 let req = Self::decode_query_token_req(data)?;
                 let denom = req.denom.as_str();
 
-                let Some(issue) = ISSUED_TOKENS.may_load(storage, denom)? else {
+                // If the token was issued via TokenFactory, return that info.
+                // Otherwise, only return a default token for "ucore" (the native Coreum token).
+                // All other tokens must be created via MsgIssue first.
+                let token = if let Some(issue) = ISSUED_TOKENS.may_load(storage, denom)? {
+                    Self::issue_to_token(denom, &issue)
+                } else if denom == DEFAULT_COIN_DENOM {
+                    // Return a default token for the native chain token (ucore)
+                    Token {
+                        denom: denom.to_string(),
+                        issuer: "".to_string(),
+                        symbol: "CORE".to_string(),
+                        subunit: denom.to_string(),
+                        precision: 6,
+                        description: "Native Coreum token".to_string(),
+                        ..Token::default()
+                    }
+                } else {
                     bail!("FT not found for denom `{}`", denom);
                 };
 
-                let token = Self::issue_to_token(denom, &issue);
                 let resp = QueryTokenResponse { token: Some(token) };
-
                 Ok(to_json_binary(&resp)?)
             }
             // --------- /coreum.asset.ft.v1.Query/Tokens (list all) ---------
