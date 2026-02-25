@@ -37,6 +37,22 @@ use std::cell::RefCell;
 use std::str::FromStr;
 use test_tube::{Account, DecodeError, EncodeError, FeeSetting, Runner, RunnerError, SigningAccount};
 
+// Conditional type aliases for coreum vs non-coreum
+#[cfg(not(feature = "coreum"))]
+type CustomModule = FailingModule<cosmwasm_std::Empty, cosmwasm_std::Empty, cosmwasm_std::Empty>;
+#[cfg(feature = "coreum")]
+type CustomModule = crate::multi_test::modules::CoreumQueryModule;
+
+#[cfg(not(feature = "coreum"))]
+type ExecC = cosmwasm_std::Empty;
+#[cfg(feature = "coreum")]
+type ExecC = coreum_wasm_sdk::core::CoreumMsg;
+
+#[cfg(not(feature = "coreum"))]
+type QueryC = cosmwasm_std::Empty;
+#[cfg(feature = "coreum")]
+type QueryC = coreum_wasm_sdk::core::CoreumQueries;
+
 pub struct MultiTestRunner<StargateT = DefaultStargate>
 where
     StargateT: MultiTestStargateBound,
@@ -46,8 +62,8 @@ where
             BankKeeper,
             MockApiBech32<'static>,
             MockStorage,
-            FailingModule<Empty, Empty, Empty>,
-            WasmKeeper<Empty, Empty>,
+            CustomModule,
+            WasmKeeper<ExecC, QueryC>,
             StakeKeeper,
             DistributionKeeper,
             IbcFailingModule,
@@ -61,6 +77,7 @@ where
 impl MultiTestRunner<StargateFailingModule> {
     /// Creates a new instance of a `MultiTestRunner`, wrapping a `cw_multi_test::App`
     /// with the given address prefix.
+    #[cfg(not(feature = "coreum"))]
     pub fn new(address_prefix: &str) -> Self {
         let prefix_string = address_prefix.to_owned();
         let leaked_prefix: &'static str = Box::leak(prefix_string.clone().into_boxed_str());
@@ -81,6 +98,29 @@ impl MultiTestRunner<StargateFailingModule> {
             address_prefix: prefix_string,
         }
     }
+
+    #[cfg(feature = "coreum")]
+    pub fn new(address_prefix: &str) -> Self {
+        let prefix_string = address_prefix.to_owned();
+        let leaked_prefix: &'static str = Box::leak(prefix_string.clone().into_boxed_str());
+
+        // Construct app with CoreumMsg and CoreumQueries
+        let wasm_keeper: WasmKeeper<ExecC, QueryC> = WasmKeeper::new().with_address_generator(MockAddressGenerator);
+
+        let stargate = UnifiedStargate::new_without_extra();
+
+        let app = BasicAppBuilder::<ExecC, QueryC>::new_custom()
+            .with_api(MockApiBech32::new(leaked_prefix))
+            .with_wasm(wasm_keeper)
+            .with_stargate(stargate)
+            .with_custom(CustomModule::default())
+            .build(|_, _, _| {});
+
+        Self {
+            app: app.into(),
+            address_prefix: prefix_string,
+        }
+    }
 }
 
 impl<StargateT> MultiTestRunner<StargateT>
@@ -90,6 +130,7 @@ where
     /// Creates a new instance of a `MultiTestRunner`, wrapping a `cw_multi_test::App`
     /// with the given address prefix and stargate keeper. This is needed for testing
     /// functionality that requires the Stargate messages or queries.
+    #[cfg(not(feature = "coreum"))]
     pub fn new_with_stargate(address_prefix: &str, stargate_impl: StargateT) -> Self {
         let prefix_string = address_prefix.to_owned();
         let leaked_prefix: &'static str = Box::leak(prefix_string.clone().into_boxed_str());
@@ -103,6 +144,29 @@ where
             .with_api(MockApiBech32::new(leaked_prefix))
             .with_wasm(wasm_keeper)
             .with_stargate(stargate)
+            .build(|_, _, _| {});
+
+        Self {
+            app: app.into(),
+            address_prefix: prefix_string,
+        }
+    }
+
+    #[cfg(feature = "coreum")]
+    pub fn new_with_stargate(address_prefix: &str, stargate_impl: StargateT) -> Self {
+        let prefix_string = address_prefix.to_owned();
+        let leaked_prefix: &'static str = Box::leak(prefix_string.clone().into_boxed_str());
+
+        let wasm_keeper: WasmKeeper<ExecC, QueryC> = WasmKeeper::new().with_address_generator(MockAddressGenerator);
+
+        let stargate = UnifiedStargate::new_with_extra(stargate_impl);
+
+        // Construct app
+        let app = BasicAppBuilder::<ExecC, QueryC>::new_custom()
+            .with_api(MockApiBech32::new(leaked_prefix))
+            .with_wasm(wasm_keeper)
+            .with_stargate(stargate)
+            .with_custom(CustomModule::default())
             .build(|_, _, _| {});
 
         Self {
@@ -126,11 +190,22 @@ where
     {
         let sender = Addr::unchecked(signer.address());
 
+        // Convert CosmosMsg<Empty> to CosmosMsg<ExecC>
+        let converted_msgs: Vec<CosmosMsg<ExecC>> = msgs
+            .iter()
+            .map(|msg| {
+                // Convert using to_json_binary and from_json_binary for safe conversion
+                // This works because CosmosMsg structure is the same, only the generic differs
+                let json = to_json_binary(msg).map_err(|e| RunnerError::GenericError(e.to_string()))?;
+                from_json(&json).map_err(|e| RunnerError::GenericError(e.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
         // Execute messages with multi test app
         let app_responses = self
             .app
             .borrow_mut()
-            .execute_multi(sender, msgs.to_vec())
+            .execute_multi(sender, converted_msgs)
             // NB: Must use this syntax to capture full anyhow message.
             // to_string() will only give the outermost error context.
             .map_err(|e| RunnerError::GenericError(format!("{:#}", e)))?;
@@ -196,7 +271,7 @@ where
                 // WasmMsg
                 MsgExecuteContract::TYPE_URL => {
                     let msg = MsgExecuteContract::decode(msg.value.as_slice()).map_err(DecodeError::ProtoDecodeError)?;
-                    Ok(CosmosMsg::<Empty>::Wasm(WasmMsg::Execute {
+                    Ok(CosmosMsg::<ExecC>::Wasm(WasmMsg::Execute {
                         contract_addr: msg.contract,
                         msg: Binary(msg.msg),
                         funds: msg
@@ -208,7 +283,7 @@ where
                 }
                 MsgInstantiateContract::TYPE_URL => {
                     let msg = MsgInstantiateContract::decode(msg.value.as_slice()).map_err(DecodeError::ProtoDecodeError)?;
-                    Ok(CosmosMsg::<Empty>::Wasm(WasmMsg::Instantiate {
+                    Ok(CosmosMsg::<ExecC>::Wasm(WasmMsg::Instantiate {
                         code_id: msg.code_id,
                         admin: Some(msg.admin),
                         msg: Binary(msg.msg),
@@ -222,7 +297,7 @@ where
                 }
                 MsgMigrateContract::TYPE_URL => {
                     let msg = MsgMigrateContract::decode(msg.value.as_slice()).map_err(DecodeError::ProtoDecodeError)?;
-                    Ok(CosmosMsg::<Empty>::Wasm(WasmMsg::Migrate {
+                    Ok(CosmosMsg::<ExecC>::Wasm(WasmMsg::Migrate {
                         contract_addr: msg.contract,
                         new_code_id: msg.code_id,
                         msg: Binary(msg.msg),
@@ -230,21 +305,21 @@ where
                 }
                 MsgUpdateAdmin::TYPE_URL => {
                     let msg = MsgUpdateAdmin::decode(msg.value.as_slice()).map_err(DecodeError::ProtoDecodeError)?;
-                    Ok(CosmosMsg::<Empty>::Wasm(WasmMsg::UpdateAdmin {
+                    Ok(CosmosMsg::<ExecC>::Wasm(WasmMsg::UpdateAdmin {
                         contract_addr: msg.contract,
                         admin: msg.new_admin,
                     }))
                 }
                 MsgClearAdmin::TYPE_URL => {
                     let msg = MsgClearAdmin::decode(msg.value.as_slice()).map_err(DecodeError::ProtoDecodeError)?;
-                    Ok(CosmosMsg::<Empty>::Wasm(WasmMsg::ClearAdmin {
+                    Ok(CosmosMsg::<ExecC>::Wasm(WasmMsg::ClearAdmin {
                         contract_addr: msg.contract,
                     }))
                 }
                 // BankMsg
                 MsgSend::TYPE_URL => {
                     let msg = MsgSend::decode(msg.value.as_slice()).map_err(DecodeError::ProtoDecodeError)?;
-                    Ok(CosmosMsg::<Empty>::Bank(BankMsg::Send {
+                    Ok(CosmosMsg::<ExecC>::Bank(BankMsg::Send {
                         to_address: msg.to_address,
                         amount: msg
                             .amount
@@ -257,7 +332,7 @@ where
                 MsgDelegate::TYPE_URL => {
                     let msg = MsgDelegate::decode(msg.value.as_slice()).map_err(DecodeError::ProtoDecodeError)?;
                     let proto_coin = msg.amount.unwrap_or_default();
-                    Ok(CosmosMsg::<Empty>::Staking(StakingMsg::Delegate {
+                    Ok(CosmosMsg::<ExecC>::Staking(StakingMsg::Delegate {
                         validator: msg.validator_address,
                         amount: coin(u128::from_str(&proto_coin.amount).unwrap(), proto_coin.denom),
                     }))
@@ -265,7 +340,7 @@ where
                 MsgUndelegate::TYPE_URL => {
                     let msg = MsgUndelegate::decode(msg.value.as_slice()).map_err(DecodeError::ProtoDecodeError)?;
                     let proto_coin = msg.amount.unwrap_or_default();
-                    Ok(CosmosMsg::<Empty>::Staking(StakingMsg::Undelegate {
+                    Ok(CosmosMsg::<ExecC>::Staking(StakingMsg::Undelegate {
                         validator: msg.validator_address,
                         amount: coin(u128::from_str(&proto_coin.amount).unwrap(), proto_coin.denom),
                     }))
@@ -273,7 +348,7 @@ where
                 MsgBeginRedelegate::TYPE_URL => {
                     let msg = MsgBeginRedelegate::decode(msg.value.as_slice()).map_err(DecodeError::ProtoDecodeError)?;
                     let proto_coin = msg.amount.unwrap_or_default();
-                    Ok(CosmosMsg::<Empty>::Staking(StakingMsg::Redelegate {
+                    Ok(CosmosMsg::<ExecC>::Staking(StakingMsg::Redelegate {
                         src_validator: msg.validator_src_address,
                         dst_validator: msg.validator_dst_address,
                         amount: coin(u128::from_str(&proto_coin.amount).unwrap(), proto_coin.denom),
@@ -281,15 +356,24 @@ where
                 }
                 _ => {
                     // Else assume StargateMsg
-                    Ok(CosmosMsg::<Empty>::Stargate {
+                    Ok(CosmosMsg::<ExecC>::Stargate {
                         type_url: msg.type_url.clone(),
                         value: msg.value.clone().into(),
                     })
                 }
             })
-            .collect::<Result<Vec<_>, RunnerError>>()?;
+            .collect::<Result<Vec<CosmosMsg<ExecC>>, RunnerError>>()?;
 
-        self.execute_cosmos_msgs(&msgs, signer)
+        // Convert CosmosMsg<ExecC> to CosmosMsg<Empty> for the trait method
+        let converted_msgs: Vec<CosmosMsg> = msgs
+            .iter()
+            .map(|msg| {
+                let json = to_json_binary(msg).map_err(|e| RunnerError::GenericError(e.to_string()))?;
+                from_json(&json).map_err(|e| RunnerError::GenericError(e.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        self.execute_cosmos_msgs(&converted_msgs, signer)
     }
 
     fn query<Q, R>(&self, path: &str, query: &Q) -> test_tube::RunnerResult<R>
@@ -387,6 +471,7 @@ where
 }
 
 #[cfg(test)]
+#[cfg(not(feature = "coreum"))]
 mod tests {
     use cosmrs::proto::cosmos::bank::v1beta1::MsgSendResponse;
     use cosmwasm_std::{coin, Event, Uint128};

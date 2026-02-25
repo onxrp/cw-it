@@ -2,8 +2,9 @@ pub mod test_contract {
     use std::fmt;
 
     use cosmwasm_schema::{cw_serde, schemars::JsonSchema};
-    use cosmwasm_std::{Binary, CustomMsg, Deps, DepsMut, Env, MessageInfo, Response, StdError, SubMsg, WasmMsg};
+    use cosmwasm_std::{Binary, CustomMsg, CustomQuery, Deps, DepsMut, Env, MessageInfo, Response, StdError, SubMsg, WasmMsg};
     use cw_multi_test::{Contract, ContractWrapper};
+    use serde::de::DeserializeOwned;
 
     #[cw_serde]
     pub struct EmptyMsg {}
@@ -22,11 +23,12 @@ pub mod test_contract {
         Err(StdError::generic_err("query not implemented for the `test_contract` contract"))
     }
 
-    pub fn contract<C>() -> Box<dyn Contract<C>>
+    pub fn contract<C, Q>() -> Box<dyn Contract<C, Q>>
     where
         C: CustomMsg + Clone + fmt::Debug + PartialEq + JsonSchema + 'static,
+        Q: CustomQuery + DeserializeOwned + 'static,
     {
-        let contract = ContractWrapper::new_with_empty(execute, instantiate, query);
+        let contract = ContractWrapper::<_, _, _, _, _, _, C, Q>::new_with_empty(execute, instantiate, query);
         Box::new(contract)
     }
 }

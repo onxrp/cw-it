@@ -22,6 +22,12 @@ use cw_storage_plus::{Item, Map};
 use prost::Message;
 use regex::Regex;
 use serde::de::DeserializeOwned;
+use coreum_wasm_sdk::{
+  core::{CoreumMsg, CoreumQueries},
+  nft,
+};
+use coreum_wasm_sdk::nft::{NFTResponse, NFTsResponse, OwnerResponse};
+use coreum_wasm_sdk::pagination::PageRequest;
 
 use crate::traits::{CREATE_TOKEN_FEE, DEFAULT_COIN_DENOM};
 
@@ -59,6 +65,9 @@ pub struct TokenFactory<'a> {
     pub max_creator_len: usize,
     pub denom_creation_fee: &'a str,
 }
+
+#[derive(Clone, Default)]
+pub struct CoreumQueryModule;
 
 impl<'a> TokenFactory<'a> {
     /// Creates a new TokenFactory instance with the given parameters.
@@ -707,176 +716,12 @@ impl<'a> Module for TokenFactory<'a> {
     fn query(
         &self,
         _api: &dyn Api,
-        storage: &dyn Storage,
+        _storage: &dyn Storage,
         _querier: &dyn Querier,
         _block: &BlockInfo,
-        request: Self::QueryT,
+        _request: Self::QueryT,
     ) -> AnyResult<Binary> {
-        let path = request.path.as_str();
-        let data = request.data.as_slice();
-
-        match path {
-            // ------------- /coreum.asset.ft.v1.Query/Token -------------
-            "/coreum.asset.ft.v1.Query/Token" => {
-                let req = Self::decode_query_token_req(data)?;
-                let denom = req.denom.as_str();
-
-                // If the token was issued via TokenFactory, return that info.
-                // Otherwise, only return a default token for "ucore" (the native Coreum token).
-                // All other tokens must be created via MsgIssue first.
-                let token = if let Some(issue) = ISSUED_TOKENS.may_load(storage, denom)? {
-                    Self::issue_to_token(denom, &issue)
-                } else if denom == DEFAULT_COIN_DENOM {
-                    // Return a default token for the native chain token (ucore)
-                    Token {
-                        denom: denom.to_string(),
-                        issuer: "".to_string(),
-                        symbol: "CORE".to_string(),
-                        subunit: denom.to_string(),
-                        precision: 6,
-                        description: "Native Coreum token".to_string(),
-                        ..Token::default()
-                    }
-                } else {
-                    bail!("FT not found for denom `{}`", denom);
-                };
-
-                let resp = QueryTokenResponse { token: Some(token) };
-                Ok(to_json_binary(&resp)?)
-            }
-            // --------- /coreum.asset.ft.v1.Query/Tokens (list all) ---------
-            "/coreum.asset.ft.v1.Query/Tokens" => {
-                // For now we ignore pagination and just dump all tokens.
-                let _req = Self::decode_query_tokens_req(data)?;
-
-                let mut tokens: Vec<Token> = Vec::new();
-                ISSUED_TOKENS
-                    .keys(storage, None, None, cosmwasm_std::Order::Ascending)
-                    .for_each(|key_res| {
-                        if let Ok(denom) = key_res {
-                            if let Ok(issue) = ISSUED_TOKENS.load(storage, denom.as_str()) {
-                                tokens.push(Self::issue_to_token(denom.as_str(), &issue));
-                            }
-                        }
-                    });
-
-                let resp = QueryTokensResponse {
-                    tokens,
-                    // you can fill pagination info if your version exposes it
-                    ..Default::default()
-                };
-
-                Ok(to_json_binary(&resp)?)
-            }
-            // ------------- /coreum.asset.nft.v1.Query/Class -------------
-            "/coreum.asset.nft.v1.Query/Class" => {
-                let req = Self::decode_query_class_req(data)?;
-                let class_id = req.id.as_str();
-
-                let Some(issue) = ISSUED_NFT_CLASSES.may_load(storage, class_id)? else {
-                    bail!("NFT class not found for id `{}`", class_id);
-                };
-
-                let class = Self::issue_class_to_class(class_id, &issue);
-                let resp = QueryClassResponse { class: Some(class) };
-
-                Ok(to_json_binary(&resp)?)
-            }
-
-            // --------- /coreum.asset.nft.v1.Query/Classes (list all) ---------
-            "/coreum.asset.nft.v1.Query/Classes" => {
-                let _req = Self::decode_query_classes_req(data)?;
-
-                let mut classes: Vec<Class> = Vec::new();
-                ISSUED_NFT_CLASSES
-                    .keys(storage, None, None, cosmwasm_std::Order::Ascending)
-                    .for_each(|key_res| {
-                        if let Ok(class_id) = key_res {
-                            if let Ok(issue) = ISSUED_NFT_CLASSES.load(storage, class_id.as_str()) {
-                                classes.push(Self::issue_class_to_class(class_id.as_str(), &issue));
-                            }
-                        }
-                    });
-
-                let resp = QueryClassesResponse {
-                    classes,
-                    ..Default::default()
-                };
-
-                Ok(to_json_binary(&resp)?)
-            }
-
-            // ------------- /coreum.asset.nft.v1.Query/NFT -------------
-            "/cosmos.nft.v1beta1.Query/NFT" | "/coreum.asset.nft.v1.Query/NFT" => {
-                let req = Self::decode_query_nft_req(data)?;
-                let class_id = req.class_id.as_str();
-                let nft_id = req.id.as_str();
-
-                let Some(stored) = MINTED_NFTS.may_load(storage, (class_id, nft_id))? else {
-                    bail!("NFT not found for {}/{}", class_id, nft_id);
-                };
-
-                let nft = Self::stored_to_nft(&stored);
-                let resp = QueryNftResponse { nft: Some(nft) };
-
-                Ok(to_json_binary(&resp)?)
-            }
-
-            // --------- /coreum.asset.nft.v1.Query/NFTs (list) ---------
-            "/cosmos.nft.v1beta1.Query/NFTs" | "/coreum.asset.nft.v1.Query/NFTs" => {
-                let req = Self::decode_query_nfts_req(data)?;
-
-                // Common filters: class_id / owner. If your SDK request fields differ, adjust here.
-                let filter_class = req.class_id.clone(); // may be empty
-                let filter_owner = req.owner.clone(); // may be empty
-
-                let mut nfts: Vec<Nft> = vec![];
-
-                // Scan all minted; filter locally (fine for tests).
-                // If you want faster filtering later, add secondary indexes.
-                MINTED_NFTS
-                    .range(storage, None, None, cosmwasm_std::Order::Ascending)
-                    .for_each(|item| {
-                        if let Ok(((class_id, nft_id), stored)) = item {
-                            if !filter_class.is_empty() && class_id != filter_class.as_str() {
-                                return;
-                            }
-                            if !filter_owner.is_empty() && stored.owner != filter_owner {
-                                return;
-                            }
-                            let _ = nft_id; // keep for clarity
-                            nfts.push(Self::stored_to_nft(&stored));
-                        }
-                    });
-
-                let resp = QueryNfTsResponse {
-                    nfts,
-                    ..Default::default()
-                };
-
-                Ok(to_json_binary(&resp)?)
-            }
-            // ------------- /coreum.asset.nft.v1.Query/Owner -------------
-            "/cosmos.nft.v1beta1.Query/Owner" | "/coreum.asset.nft.v1.Query/Owner" => {
-                let req = Self::decode_query_owner_req(data)?;
-
-                // NOTE: field names may differ by SDK version:
-                // commonly: req.class_id, req.id
-                let class_id = req.class_id.as_str();
-                let nft_id = req.id.as_str();
-
-                let Some(stored) = MINTED_NFTS.may_load(storage, (class_id, nft_id))? else {
-                    bail!("NFT not found for {}/{}", class_id, nft_id);
-                };
-
-                // NOTE: response field names may differ:
-                // commonly: owner: String
-                let resp = QueryOwnerResponse { owner: stored.owner };
-
-                Ok(to_json_binary(&resp)?)
-            }
-            _ => bail!("Unexpected stargate query: path={}, data={:?}", request.path, request.data),
-        }
+        bail!("Unsupported query type: Stargate queries are disabled");
     }
 
     fn sudo<ExecC, QueryC>(
@@ -898,6 +743,289 @@ impl<'a> Module for TokenFactory<'a> {
 
 // Mark it as a Stargate module
 impl<'a> Stargate for TokenFactory<'a> {}
+
+impl Module for CoreumQueryModule {
+    type ExecT = CoreumMsg;        // not used (you can pick Empty too)
+    type QueryT = CoreumQueries;   // <-- THIS is what your contract uses
+    type SudoT = cosmwasm_std::Empty;
+
+    fn execute<ExecC, QueryC>(
+        &self,
+        _api: &dyn Api,
+        _storage: &mut dyn Storage,
+        _router: &dyn CosmosRouter<ExecC = ExecC, QueryC = QueryC>,
+        _block: &BlockInfo,
+        _sender: cosmwasm_std::Addr,
+        _msg: Self::ExecT,
+    ) -> AnyResult<AppResponse>
+    where
+        ExecC: CustomMsg + serde::de::DeserializeOwned + 'static,
+        QueryC: CustomQuery + serde::de::DeserializeOwned + 'static,
+    {
+        bail!("CoreumQueryModule execute is not implemented")
+    }
+
+    fn query(
+        &self,
+        _api: &dyn Api,
+        storage: &dyn Storage,
+        _querier: &dyn Querier,
+        _block: &BlockInfo,
+        request: Self::QueryT,
+    ) -> AnyResult<Binary> {
+        match request {
+            CoreumQueries::NFT(q) => match q {
+                // This matches your contract query: CoreumQueries::NFT(nft::Query::NFT{..})
+                nft::Query::NFT { class_id, id } => {
+                    let Some(stored) = MINTED_NFTS.may_load(storage, (&class_id, &id))? else {
+                        bail!("NFT not found for {}/{}", class_id, id);
+                    };
+
+                    // Map your StoredNft -> your wasm-side nft::NFTResponse
+                    let resp = NFTResponse {
+                        nft: nft::NFT {
+                            class_id: stored.class_id,
+                            id: stored.id,
+                            uri: if stored.uri.is_empty() { None } else { Some(stored.uri) },
+                            uri_hash: None,
+                            data: stored.data.map(|any| {
+                                cosmwasm_std::Binary::from(any.value)
+                            }),
+                        },
+                    };
+
+                    Ok(to_json_binary(&resp)?)
+                }
+
+                nft::Query::NFTs { class_id, owner, pagination } => {
+                    let mut nfts: Vec<nft::NFT> = vec![];
+
+                    // Scan all minted; filter locally
+                    MINTED_NFTS
+                        .range(storage, None, None, cosmwasm_std::Order::Ascending)
+                        .for_each(|item| {
+                            if let Ok(((cid, nid), stored)) = item {
+                                if let Some(ref filter_class) = class_id {
+                                    if cid != filter_class.as_str() {
+                                        return;
+                                    }
+                                }
+                                if let Some(ref filter_owner) = owner {
+                                    if stored.owner != *filter_owner {
+                                        return;
+                                    }
+                                }
+                                let _ = nid; // keep for clarity
+                                nfts.push(nft::NFT {
+                                    class_id: stored.class_id,
+                                    id: stored.id,
+                                    uri: if stored.uri.is_empty() { None } else { Some(stored.uri) },
+                                    uri_hash: None,
+                                    data: stored.data.map(|any| cosmwasm_std::Binary::from(any.value)),
+                                });
+                            }
+                        });
+
+                    let resp = NFTsResponse {
+                        nfts,
+                        pagination: coreum_wasm_sdk::pagination::PageResponse {
+                            next_key: None,
+                            total: Some(0),
+                        },
+                    };
+
+                    Ok(to_json_binary(&resp)?)
+                }
+
+                nft::Query::Owner { class_id, id } => {
+                    let Some(stored) = MINTED_NFTS.may_load(storage, (&class_id, &id))? else {
+                        bail!("NFT not found for {}/{}", class_id, id);
+                    };
+
+                    let resp = OwnerResponse { owner: stored.owner };
+
+                    Ok(to_json_binary(&resp)?)
+                }
+
+                _ => bail!("Coreum NFT query not implemented: {:?}", q),
+            },
+
+            CoreumQueries::AssetNFT(q) => match q {
+                coreum_wasm_sdk::assetnft::Query::Class { id } => {
+                    let Some(issue) = ISSUED_NFT_CLASSES.may_load(storage, &id)? else {
+                        bail!("NFT class not found for id `{}`", id);
+                    };
+
+                    let class = coreum_wasm_sdk::assetnft::Class {
+                        id: id.clone(),
+                        issuer: issue.issuer.clone(),
+                        name: issue.name.clone(),
+                        symbol: issue.symbol.clone(),
+                        description: Some(issue.description.clone()),
+                        uri: Some(issue.uri.clone()),
+                        uri_hash: Some(issue.uri_hash.clone()),
+                        features: Some(issue.features.iter().map(|&f| f as u32).collect()),
+                        data: issue.data.clone().map(|d| Binary::from(d.value)),
+                        royalty_rate: Some("0".to_string()),
+                    };
+
+                    let resp = coreum_wasm_sdk::assetnft::ClassResponse { class };
+
+                    Ok(to_json_binary(&resp)?)
+                }
+
+                coreum_wasm_sdk::assetnft::Query::Classes { issuer, pagination } => {
+                    let mut classes: Vec<coreum_wasm_sdk::assetnft::Class> = Vec::new();
+                    ISSUED_NFT_CLASSES
+                        .range(storage, None, None, cosmwasm_std::Order::Ascending)
+                        .for_each(|item| {
+                            if let Ok((class_id, issue)) = item {
+                                // issuer is a String, not Option<String>
+                                if !issuer.is_empty() && issue.issuer != issuer {
+                                    return;
+                                }
+                                classes.push(coreum_wasm_sdk::assetnft::Class {
+                                    id: class_id.clone(),
+                                    issuer: issue.issuer.clone(),
+                                    name: issue.name.clone(),
+                                    symbol: issue.symbol.clone(),
+                                    description: Some(issue.description.clone()),
+                                    uri: Some(issue.uri.clone()),
+                                    uri_hash: Some(issue.uri_hash.clone()),
+                                    features: Some(issue.features.iter().map(|&f| f as u32).collect()),
+                                    data: issue.data.clone().map(|d| Binary::from(d.value)),
+                                    royalty_rate: Some("0".to_string()),
+                                });
+                            }
+                        });
+
+                    let resp = coreum_wasm_sdk::assetnft::ClassesResponse {
+                        classes,
+                        pagination: coreum_wasm_sdk::pagination::PageResponse {
+                            next_key: None,
+                            total: Some(0),
+                        },
+                    };
+
+                    Ok(to_json_binary(&resp)?)
+                }
+
+                _ => bail!("Coreum AssetNFT query not implemented: {:?}", q),
+            },
+
+            CoreumQueries::AssetFT(q) => match q {
+                coreum_wasm_sdk::assetft::Query::Token { denom } => {
+                    // If the token was issued via TokenFactory, return that info.
+                    // Otherwise, only return a default token for "ucore" (the native Coreum token).
+                    let token = if let Some(issue) = ISSUED_TOKENS.may_load(storage, &denom)? {
+                        coreum_wasm_sdk::assetft::Token {
+                            denom: denom.clone(),
+                            issuer: issue.issuer.clone(),
+                            symbol: issue.symbol.clone(),
+                            subunit: issue.subunit.clone(),
+                            precision: issue.precision,
+                            description: Some(issue.description.clone()),
+                            globally_frozen: Some(false),
+                            features: Some(vec![]),
+                            burn_rate: "0".to_string(),
+                            send_commission_rate: "0".to_string(),
+                            version: 0,
+                            uri: Some("".to_string()),
+                            uri_hash: Some("".to_string()),
+                            extension_cw_address: None,
+                            admin: None,
+                        }
+                    } else if denom == DEFAULT_COIN_DENOM {
+                        // Return a default token for the native chain token (ucore)
+                        coreum_wasm_sdk::assetft::Token {
+                            denom: denom.clone(),
+                            issuer: "".to_string(),
+                            symbol: "CORE".to_string(),
+                            subunit: denom.clone(),
+                            precision: 6,
+                            description: Some("Native Coreum token".to_string()),
+                            globally_frozen: Some(false),
+                            features: Some(vec![]),
+                            burn_rate: "0".to_string(),
+                            send_commission_rate: "0".to_string(),
+                            version: 0,
+                            uri: Some("".to_string()),
+                            uri_hash: Some("".to_string()),
+                            extension_cw_address: None,
+                            admin: None,
+                        }
+                    } else {
+                        bail!("FT not found for denom `{}`", denom);
+                    };
+
+                    let resp = coreum_wasm_sdk::assetft::TokenResponse { token };
+
+                    Ok(to_json_binary(&resp)?)
+                }
+
+                coreum_wasm_sdk::assetft::Query::Tokens { issuer, pagination } => {
+                    let mut tokens: Vec<coreum_wasm_sdk::assetft::Token> = Vec::new();
+                    ISSUED_TOKENS
+                        .range(storage, None, None, cosmwasm_std::Order::Ascending)
+                        .for_each(|item| {
+                            if let Ok((denom, issue)) = item {
+                                // issuer is a String, not Option<String>
+                                if !issuer.is_empty() && issue.issuer != issuer {
+                                    return;
+                                }
+                                tokens.push(coreum_wasm_sdk::assetft::Token {
+                                    denom: denom.clone(),
+                                    issuer: issue.issuer.clone(),
+                                    symbol: issue.symbol.clone(),
+                                    subunit: issue.subunit.clone(),
+                                    precision: issue.precision,
+                                    description: Some(issue.description.clone()),
+                                    globally_frozen: Some(false),
+                                    features: Some(vec![]),
+                                    burn_rate: "0".to_string(),
+                                    send_commission_rate: "0".to_string(),
+                                    version: 0,
+                                    uri: Some("".to_string()),
+                                    uri_hash: Some("".to_string()),
+                                    extension_cw_address: None,
+                                    admin: None,
+                                });
+                            }
+                        });
+
+                    let resp = coreum_wasm_sdk::assetft::TokensResponse {
+                        tokens,
+                        pagination: coreum_wasm_sdk::pagination::PageResponse {
+                            next_key: None,
+                            total: Some(0),
+                        },
+                    };
+
+                    Ok(to_json_binary(&resp)?)
+                }
+
+                _ => bail!("Coreum AssetFT query not implemented: {:?}", q),
+            },
+
+            _ => bail!("Coreum query not implemented: {:?}", request),
+        }
+    }
+
+    fn sudo<ExecC, QueryC>(
+        &self,
+        _api: &dyn Api,
+        _storage: &mut dyn Storage,
+        _router: &dyn CosmosRouter<ExecC = ExecC, QueryC = QueryC>,
+        _block: &BlockInfo,
+        _msg: Self::SudoT,
+    ) -> AnyResult<AppResponse>
+    where
+        ExecC: CustomMsg + serde::de::DeserializeOwned + 'static,
+        QueryC: CustomQuery + serde::de::DeserializeOwned + 'static,
+    {
+        Ok(AppResponse::default())
+    }
+}
 
 fn coin_from_sdk_string(sdk_string: &str) -> AnyResult<Coin> {
     let denom_re = Regex::new(r"^[0-9]+[a-z]+$")?;
@@ -1109,6 +1237,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "coreum"))]
     fn nft_flow_issue_mint_send_burn() {
         use cosmwasm_std::{CosmosMsg, Empty};
         use cw_multi_test::{BasicAppBuilder, Executor};
@@ -1264,6 +1393,145 @@ mod tests {
         };
 
         let resp = app.wrap().query::<QueryNfTsResponse>(&q).unwrap();
+        assert_eq!(resp.nfts.len(), 0);
+    }
+
+    #[test]
+    #[cfg(feature = "coreum")]
+    fn nft_flow_issue_mint_send_burn_coreum() {
+        use cw_multi_test::{BasicAppBuilder, Executor};
+
+        let stargate = TOKEN_FACTORY.clone();
+        let sender = Addr::unchecked("sender");
+        let receiver = Addr::unchecked("receiver");
+
+        let mut app = BasicAppBuilder::<CoreumMsg, CoreumQueries>::new_custom()
+            .with_stargate(stargate)
+            .with_custom(CoreumQueryModule::default())
+            .build(|router, _, storage| {
+                router
+                    .bank
+                    .init_balance(storage, &sender, vec![coin_from_sdk_string(DEFAULT_INIT).unwrap()])
+                    .unwrap();
+            });
+
+        // 1) Issue class
+        let issue_class = CosmosMsg::<CoreumMsg>::Stargate {
+            type_url: MsgIssueClass::TYPE_URL.to_string(),
+            value: MsgIssueClass {
+                issuer: sender.to_string(),
+                name: "My NFT Class".to_string(),
+                symbol: "NFTCLASS".to_string(),
+                description: "test".to_string(),
+                uri: "ipfs://class".to_string(),
+                ..MsgIssueClass::default()
+            }
+            .into(),
+        };
+
+        let res = app.execute(sender.clone(), issue_class).unwrap();
+        res.assert_event(
+            &Event::new("/coreum.asset.nft.v1.EventClassIssued")
+                .add_attribute("issuer", sender.to_string())
+                .add_attribute("class_id", "nftclass-sender".to_string()),
+        );
+
+        // 2) Mint NFT
+        let mint = CosmosMsg::<CoreumMsg>::Stargate {
+            type_url: MsgNftMint::TYPE_URL.to_string(),
+            value: MsgNftMint {
+                sender: sender.to_string(),
+                class_id: "nftclass-sender".to_string(),
+                id: "nft1".to_string(),
+                uri: "ipfs://nft1".to_string(),
+                recipient: sender.to_string(),
+                ..MsgNftMint::default()
+            }
+            .into(),
+        };
+
+        let res = app.execute(sender.clone(), mint).unwrap();
+        res.assert_event(
+            &Event::new("/coreum.asset.nft.v1.EventMinted")
+                .add_attribute("class_id", "nftclass-sender".to_string())
+                .add_attribute("id", "nft1".to_string())
+                .add_attribute("owner", sender.to_string()),
+        );
+
+        // 3) Send NFT to receiver (transfer)
+        let send = CosmosMsg::<CoreumMsg>::Stargate {
+            type_url: MsgNftSend::TYPE_URL.to_string(),
+            value: MsgNftSend {
+                sender: sender.to_string(),
+                class_id: "nftclass-sender".to_string(),
+                id: "nft1".to_string(),
+                receiver: receiver.to_string(),
+                ..MsgNftSend::default()
+            }
+            .into(),
+        };
+
+        let res = app.execute(sender.clone(), send).unwrap();
+        res.assert_event(
+            &Event::new("/coreum.asset.nft.v1.EventSent")
+                .add_attribute("class_id", "nftclass-sender".to_string())
+                .add_attribute("id", "nft1".to_string())
+                .add_attribute("sender", sender.to_string())
+                .add_attribute("receiver", receiver.to_string()),
+        );
+
+        // 4) Query NFT using CoreumQueries
+        let resp = app
+            .wrap()
+            .query::<NFTsResponse>(&QueryRequest::Custom(CoreumQueries::NFT(nft::Query::NFTs {
+                class_id: Some("nftclass-sender".to_string()),
+                owner: Some(receiver.to_string()),
+                pagination: None,
+            })))
+            .unwrap();
+        assert_eq!(resp.nfts.len(), 1);
+        assert_eq!(resp.nfts[0].class_id, "nftclass-sender");
+        assert_eq!(resp.nfts[0].id, "nft1");
+
+        // Query owner
+        let resp = app
+            .wrap()
+            .query::<OwnerResponse>(&QueryRequest::Custom(CoreumQueries::NFT(nft::Query::Owner {
+                class_id: "nftclass-sender".to_string(),
+                id: "nft1".to_string(),
+            })))
+            .unwrap();
+        assert_eq!(resp.owner, receiver.to_string());
+
+        // 5) Burn: must be done by current owner in our model
+        let burn = CosmosMsg::<CoreumMsg>::Stargate {
+            type_url: MsgNftBurn::TYPE_URL.to_string(),
+            value: MsgNftBurn {
+                sender: receiver.to_string(),
+                class_id: "nftclass-sender".to_string(),
+                id: "nft1".to_string(),
+                ..MsgNftBurn::default()
+            }
+            .into(),
+        };
+
+        let res = app.execute(receiver.clone(), burn).unwrap();
+        res.assert_event(
+            &Event::new("/coreum.asset.nft.v1.EventBurned")
+                .add_attribute("class_id", "nftclass-sender".to_string())
+                .add_attribute("id", "nft1".to_string())
+                .add_attribute("owner", receiver.to_string()),
+        );
+
+        // Query again -> none
+        let resp = app
+            .wrap()
+            .query::<NFTsResponse>(&QueryRequest::Custom(CoreumQueries::NFT(nft::Query::NFTs {
+                class_id: Some("nftclass-sender".to_string()),
+                owner: Some(receiver.to_string()),
+                pagination: None,
+            })))
+            .unwrap();
         assert_eq!(resp.nfts.len(), 0);
     }
 }

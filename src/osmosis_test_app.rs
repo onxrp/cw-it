@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     #[should_panic]
-    #[cfg(feature = "multi-test")]
+    #[cfg(all(feature = "multi-test", not(feature = "coreum")))]
     fn osmosis_test_app_store_code_multi_test_contract() {
         use crate::test_helpers::test_contract;
 

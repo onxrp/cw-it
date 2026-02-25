@@ -42,8 +42,10 @@ pub enum ContractType {
     Artifact(Artifact),
     /// A multi-test contract. Since multi-test contracts are not wasm files, but instead
     /// pointers to entry points of the contract, we need to handle them differently.
-    #[cfg(feature = "multi-test")]
+    #[cfg(all(feature = "multi-test", not(feature = "coreum")))]
     MultiTestContract(Box<dyn Contract<Empty, Empty>>),
+    #[cfg(all(feature = "multi-test", feature = "coreum"))]
+    MultiTestContract(Box<dyn Contract<coreum_wasm_sdk::core::CoreumMsg, coreum_wasm_sdk::core::CoreumQueries>>),
 }
 
 impl Debug for ContractType {

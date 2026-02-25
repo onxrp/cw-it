@@ -190,11 +190,15 @@ mod tests {
     #[cfg(feature = "multi-test")]
     fn coreum_test_app_store_code_multi_test_contract() {
         use crate::test_helpers::test_contract;
+        use coreum_wasm_sdk::core::{CoreumMsg, CoreumQueries};
 
         let app = CoreumTestApp::new();
         let admin = app.init_account(&[Coin::new(1000000000000, "ucore")]).unwrap();
-        app.store_code(ContractType::MultiTestContract(test_contract::contract()), &admin)
-            .unwrap();
+        app.store_code(
+            ContractType::MultiTestContract(test_contract::contract::<CoreumMsg, CoreumQueries>()),
+            &admin,
+        )
+        .unwrap();
     }
 
     #[test]

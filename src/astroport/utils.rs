@@ -663,11 +663,15 @@ where
 
 #[cfg(feature = "astroport-multi-test")]
 pub fn get_astroport_multitest_contracts() -> HashMap<String, ContractType> {
-    use cosmwasm_std::Empty;
     use cw_multi_test::ContractWrapper;
 
     use crate::create_contract_wrappers;
     use crate::create_contract_wrappers_with_reply;
+
+    #[cfg(not(feature = "coreum"))]
+    use cosmwasm_std::Empty;
+    #[cfg(feature = "coreum")]
+    use coreum_wasm_sdk::core::{CoreumMsg, CoreumQueries};
 
     let mut contract_wrappers = create_contract_wrappers!(
         "astroport_native_coin_registry",
@@ -684,6 +688,7 @@ pub fn get_astroport_multitest_contracts() -> HashMap<String, ContractType> {
     ));
 
     // Liquidity manager, incentives, and concentrated pair don't have query entrypoint in contract module
+    #[cfg(not(feature = "coreum"))]
     contract_wrappers.extend(vec![
         // (
         //     "astroport_liquidity_manager".to_string(),
@@ -694,7 +699,7 @@ pub fn get_astroport_multitest_contracts() -> HashMap<String, ContractType> {
         //             astroport_liquidity_manager::query::query,
         //         )
         //         .with_reply(astroport_liquidity_manager::contract::reply),
-        //     ) as Box<dyn cw_multi_test::Contract<Empty>>,
+        //     ) as Box<dyn cw_multi_test::Contract<Empty, Empty>>,
         // ),
         (
             "astroport_pair_concentrated".to_string(),
@@ -705,7 +710,7 @@ pub fn get_astroport_multitest_contracts() -> HashMap<String, ContractType> {
                     astroport_pair_concentrated::queries::query,
                 )
                 .with_reply(astroport_pair_concentrated::contract::reply),
-            ) as Box<dyn cw_multi_test::Contract<Empty>>,
+            ) as Box<dyn cw_multi_test::Contract<Empty, Empty>>,
         ),
         (
             "astroport_incentives".to_string(),
@@ -716,7 +721,44 @@ pub fn get_astroport_multitest_contracts() -> HashMap<String, ContractType> {
                     astroport_incentives::query::query,
                 )
                 .with_reply(astroport_incentives::reply::reply),
-            ) as Box<dyn cw_multi_test::Contract<Empty>>,
+            ) as Box<dyn cw_multi_test::Contract<Empty, Empty>>,
+        ),
+    ]);
+
+    #[cfg(feature = "coreum")]
+    contract_wrappers.extend(vec![
+        // (
+        //     "astroport_liquidity_manager".to_string(),
+        //     Box::new(
+        //         ContractWrapper::<_, _, _, _, _, _, CoreumMsg, CoreumQueries>::new_with_empty(
+        //             astroport_liquidity_manager::contract::execute,
+        //             astroport_liquidity_manager::contract::instantiate,
+        //             astroport_liquidity_manager::query::query,
+        //         )
+        //         .with_reply_empty(astroport_liquidity_manager::contract::reply),
+        //     ) as Box<dyn cw_multi_test::Contract<CoreumMsg, CoreumQueries>>,
+        // ),
+        (
+            "astroport_pair_concentrated".to_string(),
+            Box::new(
+                ContractWrapper::<_, _, _, _, _, _, CoreumMsg, CoreumQueries>::new_with_empty(
+                    astroport_pair_concentrated::contract::execute,
+                    astroport_pair_concentrated::contract::instantiate,
+                    astroport_pair_concentrated::queries::query,
+                )
+                .with_reply_empty(astroport_pair_concentrated::contract::reply),
+            ) as Box<dyn cw_multi_test::Contract<CoreumMsg, CoreumQueries>>,
+        ),
+        (
+            "astroport_incentives".to_string(),
+            Box::new(
+                ContractWrapper::<_, _, _, _, _, _, CoreumMsg, CoreumQueries>::new_with_empty(
+                    astroport_incentives::execute::execute,
+                    astroport_incentives::instantiate::instantiate,
+                    astroport_incentives::query::query,
+                )
+                .with_reply_empty(astroport_incentives::reply::reply),
+            ) as Box<dyn cw_multi_test::Contract<CoreumMsg, CoreumQueries>>,
         ),
     ]);
 
